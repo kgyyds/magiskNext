@@ -1,0 +1,50 @@
+name: Build Magisk APK (Ubuntu)
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "app/**"
+      - "native/**"
+      - "build.py"
+      - ".github/**"
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup environment (Magisk official)
+        uses: ./.github/actions/setup
+        with:
+          is-asset-build: true
+
+      # 如果你只想要一个，就把 debug 这段删掉
+      - name: Build APK (Debug)
+        run: python3 build.py -v app
+
+      - name: Stop gradle daemon
+        run: ./app/gradlew --stop
+
+      # out/ 里通常会有 Magisk-*.apk 之类的产物
+      - name: Upload out/
+        uses: actions/upload-artifact@v4
+        with:
+          name: out-${{ github.sha }}
+          path: out
+          compression-level: 9
+
+      # 再把 gradle outputs 也打包，防止你找不到 apk
+      - name: Upload APK outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-outputs-${{ github.sha }}
+          path: |
+            app/apk/build/outputs/**/*.apk
+            app/apk/build/outputs/**/mapping.txt
+          compression-level: 9
