@@ -24,6 +24,11 @@ jobs:
         with:
           is-asset-build: true
 
+      - name: Build native (required for app jni sync)
+        run: python3 build.py -v native
+
+        
+      
       # 如果你只想要一个，就把 debug 这段删掉
       - name: Build APK (Debug)
         run: python3 build.py -v app
