@@ -110,7 +110,8 @@ impl MagiskD {
         setup_logfile();
         info!("** post-fs-data mode running");
 
-        self.preserve_stub_apk();
+        //不安装stubapk，防止暴露
+        //self.preserve_stub_apk();
 
         // Check secure dir
         let secure_dir = cstr!(SECURE_DIR);
@@ -122,13 +123,15 @@ impl MagiskD {
                 return true;
             }
         }
-
-        self.prune_su_access();
-
-        if !self.setup_magisk_env() {
-            error!("* Magisk environment incomplete, abort");
-            return true;
-        }
+        
+        //不提供su，不需要
+        //self.prune_su_access();
+        
+        //不需要设置面具的环境，不需要，前面被破坏，去除这里防止返回
+        //if !self.setup_magisk_env() {
+        //    error!("* Magisk environment incomplete, abort");
+        //    return true;
+        //}
 
         // Check safe mode
         let boot_cnt = self.get_db_setting(DbEntryKey::BootloopCount);
@@ -143,23 +146,33 @@ impl MagiskD {
         if safe_mode {
             info!("* Safe mode triggered");
             // Disable all modules and zygisk so next boot will be clean
-            disable_modules();
-            self.set_db_setting(DbEntryKey::ZygiskConfig, 0).log_ok();
+            //触发安全模式后不要动模块还有zygisk弄成0，反正你这动不了哈哈哈
+            //disable_modules();
+            //self.set_db_setting(DbEntryKey::ZygiskConfig, 0).log_ok();
             return true;
         }
-
-        exec_common_scripts(cstr!("post-fs-data"));
+        //不需要执行面具的脚本，只需要执行自己的，这里去掉哈
+        //exec_common_scripts(cstr!("post-fs-data"));
+        
+        //下面这一块不清楚要不要动，它会读数据库，来配置zygisk，不确定后面有没有剔除好，先保留。保留的话会存在zygisk config，可能会导致环境泄露
+        //-----------
         self.zygisk_enabled.store(
             self.get_db_setting(DbEntryKey::ZygiskConfig) != 0,
             Ordering::Release,
         );
-        initialize_denylist();
-        self.handle_modules();
-        clean_mounts();
+        //----------------
+        //用来初始化子系统运行太，不用了应该
+        //initialize_denylist();
+        
+        //不需要处理模块，这里去除
+        //self.handle_modules();
+        
+        //清理挂载相关，应该可以关
+        //clean_mounts();
 
         false
     }
-
+/*
     fn late_start(&self) {
         setup_logfile();
         info!("** late_start service mode running");
@@ -169,7 +182,13 @@ impl MagiskD {
             exec_module_scripts(cstr!("service"), module_list);
         }
     }
-
+*/
+    //用来模块相关的，保留空实现
+    fn late_start(&self) {
+        setup_logfile();
+        info!("** late_start service mode running");
+        // no-op
+    }
     fn boot_complete(&self) {
         setup_logfile();
         info!("** boot-complete triggered");
@@ -182,12 +201,16 @@ impl MagiskD {
         if !secure_dir.exists() {
             secure_dir.mkdir(0o700).log_ok();
         }
-
-        setup_preinit_dir();
-        self.ensure_manager();
-        if self.zygisk_enabled.load(Ordering::Relaxed) {
-            self.zygisk.lock().reset(true);
-        }
+        
+        //不需要准备挂载，去掉！ 
+        //setup_preinit_dir();
+        
+        //不需要确认管理器是不是存在，去掉。
+        //self.ensure_manager();
+        //去除判断zygisk的东西，防止它自己打开
+        //if self.zygisk_enabled.load(Ordering::Relaxed) {
+        //    self.zygisk.lock().reset(true);
+        //}
     }
 
     pub fn boot_stage_handler(&self, client: UnixStream, code: RequestCode) {

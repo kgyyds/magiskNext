@@ -2,7 +2,7 @@ name: Build Magisk APK (Ubuntu)
 
 on:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "app/**"
       - "native/**"
