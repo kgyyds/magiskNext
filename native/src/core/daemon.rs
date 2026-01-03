@@ -1,3 +1,5 @@
+
+
 use crate::bootstages::BootState;
 use crate::consts::{
     MAGISK_FILE_CON, MAGISK_FULL_VER, MAGISK_PROC_CON, MAGISK_VER_CODE, MAGISK_VERSION,
@@ -35,6 +37,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::nonpoison::Mutex;
 use std::time::Duration;
+
+//设置状态，只跑一次
+static RUN_ONCE: OnceLock<()> = OnceLock::new();
 
 // Global magiskd singleton
 pub static MAGISKD: OnceLock<MagiskD> = OnceLock::new();
@@ -117,8 +122,19 @@ impl MagiskD {
         }
     }
 
+
+    
+
+
+
+
     fn handle_request_async(&self, mut client: UnixStream, code: RequestCode, cred: UCred) {
+
+        
+
         match code {
+            
+
             RequestCode::DENYLIST => {
                 denylist_handler(client.into_raw_fd());
             }
@@ -281,6 +297,69 @@ fn switch_cgroup(cgroup: &str, pid: i32) {
     }
 }
 
+fn kmsg(tag: &str) {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            if let Ok(mut f) = OpenOptions::new().write(true).open("/dev/kmsg") {
+                let _ = writeln!(f, "<6>[kg] {}", tag);
+            }
+}
+
+
+
+
+
+// run sh out put to 内核日志
+fn run_test_sh_to_kmsg_spawn() {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let child = Command::new("/system/bin/sh")
+        .arg("/data/adb/test.sh")
+        // ✅ 关键：别用 piped（不读会卡死），直接丢弃
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    if let Ok(mut kmsg) = OpenOptions::new().write(true).open("/dev/kmsg") {
+        match child {
+            Ok(c) => {
+                let _ = writeln!(kmsg, "<6>[magiskd-once] spawned test.sh pid={}", c.id());
+                // 不 wait，让它自己常驻跑（堵塞也没事）
+            }
+            Err(e) => {
+                let _ = writeln!(kmsg, "<3>[magiskd-once] spawn failed: {e}");
+            }
+        }
+    }
+}
+
+
+fn spawn_boot_watcher() {
+    use std::{thread, time::Duration};
+    thread::spawn(|| {
+        kmsg("boot_watcher start");
+        loop {
+            let v = get_prop(cstr!("sys.boot_completed"));
+            if v == "1" {
+                kmsg("sys.boot_completed=1, run script");
+                if RUN_ONCE.set(()).is_ok() {
+                    run_test_sh_to_kmsg_spawn();
+                } else {
+                    kmsg("RUN_ONCE already set");
+                }
+                break;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+    });
+}
+
+
+
+
 fn daemon_entry() {
     set_nice_name(cstr!("magiskd"));
     android_logging();
@@ -415,6 +494,9 @@ fn daemon_entry() {
 
     sock_path.follow_link().chmod(0o666).log_ok();
     sock_path.set_secontext(cstr!(MAGISK_FILE_CON)).log_ok();
+
+    spawn_boot_watcher();
+
 
     // Loop forever to listen for requests
     let daemon = MagiskD::get();
