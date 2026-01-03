@@ -54,7 +54,10 @@ impl SePolicy {
         rules! {
             use self;
             // Prevent anything to change sepolicy except ourselves
-            deny(all, ["kernel"], ["security"], ["load_policy"]);
+            //不拦截内核对sepolicy的修改
+            //deny(all, ["kernel"], ["security"], ["load_policy"]);
+            
+            
             type_(proc, ["domain"]);
             typeattribute([proc], ["mlstrustedsubject", "netdomain", "appdomain"]);
             type_(file, ["file_type"]);
@@ -63,13 +66,16 @@ impl SePolicy {
             typeattribute([log], ["mlstrustedobject"]);
 
             // Create unconstrained file type
-            allow(["domain"], [file],
-                ["file", "dir", "fifo_file", "chr_file", "lnk_file", "sock_file"], all);
+            //不要运行任何domain碰我的东西
+            //allow(["domain"], [file],
+            //    ["file", "dir", "fifo_file", "chr_file", "lnk_file", "sock_file"], all);
 
             // Only allow zygote to open log pipe
-            allow(["zygote"], [log], ["fifo_file"], ["open", "read"]);
+            //不要允许zygote写日志，这个应该让ksu实现
+            //allow(["zygote"], [log], ["fifo_file"], ["open", "read"]);
             // Allow all processes to output logs
-            allow(["domain"], [log], ["fifo_file"], ["write"]);
+            //不要允许全局domain写日志啊
+            //allow(["domain"], [log], ["fifo_file"], ["write"]);
 
             // Make our root domain unconstrained
             allow([proc], [
@@ -90,17 +96,20 @@ impl SePolicy {
             allow(svcmgr, [proc], ["dir"], ["search"]);
             allow(svcmgr, [proc], ["file"], ["open", "read", "map"]);
             allow(svcmgr, [proc], ["process"], ["getattr"]);
-            allow(["domain"], [proc], ["binder"], ["call", "transfer"]);
+            //不要允许任何域都能 binder call/transfer 你的 proc domain。
+            //allow(["domain"], [proc], ["binder"], ["call", "transfer"]);
 
             // Other common IPC
-            allow(["domain"], [proc], ["process"], ["sigchld"]);
-            allow(["domain"], [proc], ["fd"], ["use"]);
-            allow(["domain"], [proc], ["fifo_file"], ["write", "read", "open", "getattr"]);
+            //不要允许其他人和我ipc交互
+            //allow(["domain"], [proc], ["process"], ["sigchld"]);
+            //allow(["domain"], [proc], ["fd"], ["use"]);
+            //allow(["domain"], [proc], ["fifo_file"], ["write", "read", "open", "getattr"]);
 
             // Allow these processes to access MagiskSU and output logs
-            allow(["zygote", "shell", "platform_app",
-                "system_app", "priv_app", "untrusted_app", "untrusted_app_all"],
-                [proc], ["unix_stream_socket"], ["connectto", "getopt"]);
+            //不要允许其他人连接我的socket
+            //allow(["zygote", "shell", "platform_app",
+            //    "system_app", "priv_app", "untrusted_app", "untrusted_app_all"],
+            //    [proc], ["unix_stream_socket"], ["connectto", "getopt"]);
 
             // Let selected domains access tmpfs files
             // For tmpfs overlay on 2SI, Zygisk on lower Android versions and AVD scripts
@@ -129,16 +138,18 @@ impl SePolicy {
             allow(["kernel"], ["fs_type", "dev_type", "file_type"], ["file"], ["read", "write"]);
 
             // Zygisk rules
-            allow(["zygote"], ["zygote"], ["process"], ["execmem"]);
-            allow(["zygote"], ["fs_type"], ["filesystem"], ["unmount"]);
-            allow(["system_server"], ["system_server"], ["process"], ["execmem"]);
+            //不要影响别人
+            //allow(["zygote"], ["zygote"], ["process"], ["execmem"]);
+            //allow(["zygote"], ["fs_type"], ["filesystem"], ["unmount"]);
+            //allow(["system_server"], ["system_server"], ["process"], ["execmem"]);
 
             // Shut llkd up
             dontaudit(["llkd"], [proc], ["process"], ["ptrace"]);
 
             // Keep /data/adb/* context
-            deny(["init"], ["adb_data_file"], ["dir"], ["search"]);
-            deny(["vendor_init"], ["adb_data_file"], ["dir"], ["search"]);
+            //不拦截对/data/adb的访问，相关隐藏/data/adb让ksu实现
+            //deny(["init"], ["adb_data_file"], ["dir"], ["search"]);
+            //deny(["vendor_init"], ["adb_data_file"], ["dir"], ["search"]);
         }
 
         #[cfg(any())]

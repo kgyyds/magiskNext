@@ -107,11 +107,6 @@ impl MagiskD {
                 setup_logfile();
             }
             RequestCode::STOP_DAEMON => {
-                // Unmount all overlays
-                denylist_handler(-1);
-
-                // Restore native bridge property
-                self.zygisk.lock().restore_prop();
 
                 client.write_pod(&0).log_ok();
 
