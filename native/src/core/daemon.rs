@@ -136,32 +136,22 @@ impl MagiskD {
             
 
             RequestCode::DENYLIST => {
-                denylist_handler(client.into_raw_fd());
+                
             }
             RequestCode::SUPERUSER => {
-                self.su_daemon_handler(client, cred);
+                
             }
             RequestCode::ZYGOTE_RESTART => {
-                info!("** zygote restarted");
-                self.prune_su_access();
-                scan_deny_apps();
-                if self.zygisk_enabled.load(Ordering::Relaxed) {
-                    self.zygisk.lock().reset(false);
-                }
+                
             }
             RequestCode::SQLITE_CMD => {
-                self.db_exec_for_cli(client).ok();
+                
             }
             RequestCode::REMOVE_MODULES => {
-                let do_reboot: bool = client.read_decodable().log().unwrap_or_default();
-                remove_modules();
-                client.write_pod(&0).log_ok();
-                if do_reboot {
-                    self.reboot();
-                }
+                
             }
             RequestCode::ZYGISK => {
-                self.zygisk_handler(client);
+                
             }
             _ => {}
         }
@@ -492,7 +482,7 @@ fn daemon_entry() {
         exit(1);
     };
 
-    sock_path.follow_link().chmod(0o666).log_ok();
+    sock_path.follow_link().chmod(0o600).log_ok();
     sock_path.set_secontext(cstr!(MAGISK_FILE_CON)).log_ok();
 
     spawn_boot_watcher();
