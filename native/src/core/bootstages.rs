@@ -167,8 +167,8 @@ impl MagiskD {
         //不需要处理模块，这里去除
         //self.handle_modules();
         
-        //清理挂载相关，应该可以关
-        //clean_mounts();
+        //清理挂载相关，不要动
+        clean_mounts();
 
         false
     }
