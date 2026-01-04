@@ -1,66 +1,273 @@
+
+
+use crate::bootstages::BootState;
 use crate::consts::{
     MAGISK_FILE_CON, MAGISK_FULL_VER, MAGISK_PROC_CON, MAGISK_VER_CODE, MAGISK_VERSION,
     MAIN_CONFIG, MAIN_SOCKET, ROOTMNT, ROOTOVL,
 };
+use crate::db::Sqlite3;
+use crate::ffi::{
+    ModuleInfo, RequestCode, RespondCode, denylist_handler, get_magisk_tmp, scan_deny_apps,
+};
 use crate::logging::{android_logging, magisk_logging, setup_logfile, start_log_daemon};
+use crate::module::remove_modules;
+use crate::package::ManagerInfo;
 use crate::resetprop::{get_prop, set_prop};
 use crate::selinux::restore_tmpcon;
-use crate::ffi::{RequestCode, RespondCode, get_magisk_tmp};
-
+use crate::socket::{IpcRead, IpcWrite};
+use crate::su::SuInfo;
+use crate::thread::ThreadPool;
+use crate::zygisk::ZygiskState;
 use base::const_format::concatcp;
 use base::{
-    BufReadExt, FsPathBuilder, LoggedResult, ResultExt, Utf8CStr,
-    WriteExt, cstr, fork_dont_care, info, libc, log_err, set_nice_name,
+    AtomicArc, BufReadExt, FileAttr, FsPathBuilder, LoggedResult, ReadExt, ResultExt, Utf8CStr,
+    Utf8CStrBuf, WriteExt, cstr, fork_dont_care, info, libc, log_err, set_nice_name,
 };
-
 use nix::fcntl::OFlag;
 use nix::mount::MsFlags;
 use nix::sys::signal::SigSet;
 use nix::unistd::{dup2_stderr, dup2_stdin, dup2_stdout, getpid, getuid, setsid};
-
 use num_traits::AsPrimitive;
 use std::fmt::Write as _;
-use std::fs::OpenOptions;
 use std::io::{BufReader, Write};
 use std::os::fd::{AsFd, AsRawFd, IntoRawFd, RawFd};
 use std::os::unix::net::{UCred, UnixListener, UnixStream};
-use std::process::{Command, Stdio, exit};
+use std::process::{Command, exit};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::nonpoison::Mutex;
 use std::time::Duration;
 
-// 只跑一次（你要一直 curl 就不用它；要只跑一次就用）
+//设置状态，只跑一次
 static RUN_ONCE: OnceLock<()> = OnceLock::new();
 
-fn kmsg(tag: &str) {
-    if let Ok(mut f) = OpenOptions::new().write(true).open("/dev/kmsg") {
-        let _ = writeln!(f, "<6>[curlcute] {}", tag);
+// Global magiskd singleton
+pub static MAGISKD: OnceLock<MagiskD> = OnceLock::new();
+
+pub const AID_ROOT: i32 = 0;
+pub const AID_SHELL: i32 = 2000;
+pub const AID_APP_START: i32 = 10000;
+pub const AID_APP_END: i32 = 19999;
+pub const AID_USER_OFFSET: i32 = 100000;
+
+pub const fn to_app_id(uid: i32) -> i32 {
+    uid % AID_USER_OFFSET
+}
+
+pub const fn to_user_id(uid: i32) -> i32 {
+    uid / AID_USER_OFFSET
+}
+
+#[derive(Default)]
+pub struct MagiskD {
+    pub sql_connection: Mutex<Option<Sqlite3>>,
+    pub manager_info: Mutex<ManagerInfo>,
+    pub boot_stage_lock: Mutex<BootState>,
+    pub module_list: OnceLock<Vec<ModuleInfo>>,
+    pub zygisk_enabled: AtomicBool,
+    pub zygisk: Mutex<ZygiskState>,
+    pub cached_su_info: AtomicArc<SuInfo>,
+    pub sdk_int: i32,
+    pub is_emulator: bool,
+    is_recovery: bool,
+    exe_attr: FileAttr,
+}
+
+impl MagiskD {
+    pub fn get() -> &'static MagiskD {
+        unsafe { MAGISKD.get().unwrap_unchecked() }
+    }
+
+    pub fn sdk_int(&self) -> i32 {
+        self.sdk_int
+    }
+
+    pub fn app_data_dir(&self) -> &'static Utf8CStr {
+        if self.sdk_int >= 24 {
+            cstr!("/data/user_de")
+        } else {
+            cstr!("/data/user")
+        }
+    }
+
+    fn handle_request_sync(&self, mut client: UnixStream, code: RequestCode) {
+        match code {
+            RequestCode::CHECK_VERSION => {
+                #[cfg(debug_assertions)]
+                let s = concatcp!(MAGISK_VERSION, ":MAGISK:D");
+                #[cfg(not(debug_assertions))]
+                let s = concatcp!(MAGISK_VERSION, ":MAGISK:R");
+
+                client.write_encodable(s).log_ok();
+            }
+            RequestCode::CHECK_VERSION_CODE => {
+                client.write_pod(&MAGISK_VER_CODE).log_ok();
+            }
+            RequestCode::START_DAEMON => {
+                setup_logfile();
+            }
+            RequestCode::STOP_DAEMON => {
+
+                client.write_pod(&0).log_ok();
+
+                // Terminate the daemon!
+                exit(0);
+            }
+            _ => {}
+        }
+    }
+
+
+    
+
+
+
+
+    fn handle_request_async(&self, mut client: UnixStream, code: RequestCode, cred: UCred) {
+
+        
+
+        match code {
+            
+
+            RequestCode::DENYLIST => {
+                
+            }
+            RequestCode::SUPERUSER => {
+                
+            }
+            RequestCode::ZYGOTE_RESTART => {
+                
+            }
+            RequestCode::SQLITE_CMD => {
+                
+            }
+            RequestCode::REMOVE_MODULES => {
+                
+            }
+            RequestCode::ZYGISK => {
+                
+            }
+            _ => {}
+        }
+    }
+
+    fn reboot(&self) {
+        if self.is_recovery {
+            Command::new("/system/bin/reboot").arg("recovery").status()
+        } else {
+            Command::new("/system/bin/reboot").status()
+        }
+        .ok();
+    }
+
+    #[cfg(feature = "check-client")]
+    fn is_client(&self, pid: i32) -> bool {
+        let mut buf = cstr::buf::new::<32>();
+        write!(buf, "/proc/{pid}/exe").ok();
+        if let Ok(attr) = buf.follow_link().get_attr() {
+            attr.st.st_dev == self.exe_attr.st.st_dev && attr.st.st_ino == self.exe_attr.st.st_ino
+        } else {
+            false
+        }
+    }
+
+    #[cfg(not(feature = "check-client"))]
+    fn is_client(&self, pid: i32) -> bool {
+        true
+    }
+
+    fn handle_requests(&'static self, mut client: UnixStream) {
+        let Ok(cred) = client.peer_cred() else {
+            // Client died
+            return;
+        };
+
+        // There are no abstractions for SO_PEERSEC yet, call the raw C API.
+        let mut context = cstr::buf::new::<256>();
+        unsafe {
+            let mut len: libc::socklen_t = context.capacity().as_();
+            libc::getsockopt(
+                client.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERSEC,
+                context.as_mut_ptr().cast(),
+                &mut len,
+            );
+        }
+        context.rebuild().ok();
+
+        let is_root = cred.uid == 0;
+        let is_shell = cred.uid == 2000;
+        let is_zygote = &context == "u:r:zygote:s0";
+
+        if !is_root && !is_zygote && !self.is_client(cred.pid.unwrap_or(-1)) {
+            // Unsupported client state
+            client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+            return;
+        }
+
+        let mut code = -1;
+        client.read_pod(&mut code).ok();
+        if !(0..RequestCode::END.repr).contains(&code)
+            || code == RequestCode::_SYNC_BARRIER_.repr
+            || code == RequestCode::_STAGE_BARRIER_.repr
+        {
+            // Unknown request code
+            return;
+        }
+
+        let code = RequestCode { repr: code };
+
+        // Permission checks
+        match code {
+            RequestCode::POST_FS_DATA
+            | RequestCode::LATE_START
+            | RequestCode::BOOT_COMPLETE
+            | RequestCode::ZYGOTE_RESTART
+            | RequestCode::SQLITE_CMD
+            | RequestCode::DENYLIST
+            | RequestCode::STOP_DAEMON => {
+                if !is_root {
+                    client.write_pod(&RespondCode::ROOT_REQUIRED.repr).log_ok();
+                    return;
+                }
+            }
+            RequestCode::REMOVE_MODULES => {
+                if !is_root && !is_shell {
+                    // Only allow root and ADB shell to remove modules
+                    client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+                    return;
+                }
+            }
+            RequestCode::ZYGISK => {
+                if !is_zygote {
+                    // Invalid client context
+                    client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+                    return;
+                }
+            }
+            _ => {}
+        }
+
+        if client.write_pod(&RespondCode::OK.repr).is_err() {
+            return;
+        }
+
+        if code.repr < RequestCode::_SYNC_BARRIER_.repr {
+            self.handle_request_sync(client, code)
+        } else if code.repr < RequestCode::_STAGE_BARRIER_.repr {
+            ThreadPool::exec_task(move || {
+                self.handle_request_async(client, code, cred);
+            })
+        } else {
+            ThreadPool::exec_task(move || {
+                self.boot_stage_handler(client, code);
+            })
+        }
     }
 }
 
-fn append_testlog(line: &str) {
-    if let Ok(mut f) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/data/test.txt")
-    {
-        let _ = writeln!(f, "{}", line);
-    }
-}
-
-fn append_testlog_bytes(prefix: &str, bytes: &[u8], max: usize) {
-    if let Ok(mut f) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/data/test.txt")
-    {
-        let n = bytes.len().min(max);
-        let _ = writeln!(f, "{} (len={}, show={})", prefix, bytes.len(), n);
-        let _ = f.write_all(&bytes[..n]);
-        let _ = writeln!(f, "\n");
-    }
-}
-
-// cgroup 逃逸（保命）
 fn switch_cgroup(cgroup: &str, pid: i32) {
     let mut buf = cstr::buf::new::<64>()
         .join_path(cgroup)
@@ -75,176 +282,77 @@ fn switch_cgroup(cgroup: &str, pid: i32) {
     }
 }
 
-fn curl_once_and_log() {
-    // 优先 curl，其次 toybox wget
-    let mut cmd: Option<Command> = None;
-
-    if cstr!("/system/bin/curl").exists() {
-        let mut c = Command::new("/system/bin/curl");
-        c.args([
-            "-L",
-            "--connect-timeout", "3",
-            "--max-time", "6",
-            "https://baidu.com",
-        ]);
-        cmd = Some(c);
-    } else if cstr!("/system/bin/toybox").exists() {
-        let mut c = Command::new("/system/bin/toybox");
-        c.args(["wget", "-T", "6", "-qO-", "https://baidu.com"]);
-        cmd = Some(c);
-    }
-
-    let Some(mut c) = cmd else {
-        kmsg("no /system/bin/curl and no toybox wget");
-        append_testlog("no /system/bin/curl and no toybox wget");
-        return;
-    };
-
-    c.stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .stdout(Stdio::piped());
-
-    let out = match c.output() {
-        Ok(o) => o,
-        Err(e) => {
-            let s = format!("curlcute: spawn failed: {e}");
-            kmsg(&s);
-            append_testlog(&s);
-            return;
-        }
-    };
-
-    let code = out.status.code().unwrap_or(-1);
-    let head = format!("---- curl tick: code={code}");
-    kmsg(&head);
-    append_testlog(&head);
-
-    // 只记 512 字节，防止 /data/test.txt 爆炸
-    append_testlog_bytes("body", &out.stdout, 512);
+fn kmsg(tag: &str) {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            if let Ok(mut f) = OpenOptions::new().write(true).open("/dev/kmsg") {
+                let _ = writeln!(f, "<6>[kg] {}", tag);
+            }
 }
 
-fn spawn_curl_worker_keepalive() {
-    std::thread::spawn(|| {
-        kmsg("curl_worker start");
-        append_testlog("curl_worker start");
 
-        // 等 boot_completed=1 再开始，更稳
+
+
+
+// run sh out put to 内核日志
+fn run_test_sh_to_kmsg_spawn() {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let child = Command::new("/system/bin/sh")
+        .arg("/data/adb/test.sh")
+        // ✅ 关键：别用 piped（不读会卡死），直接丢弃
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    if let Ok(mut kmsg) = OpenOptions::new().write(true).open("/dev/kmsg") {
+        match child {
+            Ok(c) => {
+                let _ = writeln!(kmsg, "<6>[magiskd-once] spawned test.sh pid={}", c.id());
+                // 不 wait，让它自己常驻跑（堵塞也没事）
+            }
+            Err(e) => {
+                let _ = writeln!(kmsg, "<3>[magiskd-once] spawn failed: {e}");
+            }
+        }
+    }
+}
+
+
+fn spawn_boot_watcher() {
+    use std::{thread, time::Duration};
+    thread::spawn(|| {
+        kmsg("boot_watcher start");
         loop {
-            if get_prop(cstr!("sys.boot_completed")) == "1" {
-                kmsg("boot_completed=1, start curl loop");
-                append_testlog("boot_completed=1, start curl loop");
+            let v = get_prop(cstr!("sys.boot_completed"));
+            if v == "1" {
+                kmsg("sys.boot_completed=1, run script");
+                if RUN_ONCE.set(()).is_ok() {
+                    run_test_sh_to_kmsg_spawn();
+                } else {
+                    kmsg("RUN_ONCE already set");
+                }
                 break;
             }
-            std::thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_millis(500));
         }
-
-        // ✅ 常驻：每 30s 跑一次
-        loop {
-            curl_once_and_log();
-            std::thread::sleep(Duration::from_secs(30));
-        }
-
-        // ✅ 只跑一次版本（想要就把上面的 loop 注释掉，打开这里）
-        // if RUN_ONCE.set(()).is_ok() {
-        //     curl_once_and_log();
-        // }
     });
 }
 
-fn handle_request_sync(mut client: UnixStream, code: RequestCode) {
-    match code {
-        RequestCode::CHECK_VERSION => {
-            #[cfg(debug_assertions)]
-            let s = concatcp!(MAGISK_VERSION, ":MAGISK:D");
-            #[cfg(not(debug_assertions))]
-            let s = concatcp!(MAGISK_VERSION, ":MAGISK:R");
-            client.write_encodable(s).log_ok();
-        }
-        RequestCode::CHECK_VERSION_CODE => {
-            client.write_pod(&MAGISK_VER_CODE).log_ok();
-        }
-        RequestCode::START_DAEMON => {
-            setup_logfile();
-        }
-        RequestCode::STOP_DAEMON => {
-            client.write_pod(&0).log_ok();
-            exit(0);
-        }
-        _ => {
-            // 其他请求全部忽略（你说不需要对外处理能力）
-        }
-    }
-}
 
-fn handle_requests(mut client: UnixStream) {
-    let Ok(cred) = client.peer_cred() else {
-        return;
-    };
 
-    // 读取对端 SELinux context
-    let mut context = cstr::buf::new::<256>();
-    unsafe {
-        let mut len: libc::socklen_t = context.capacity().as_();
-        libc::getsockopt(
-            client.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERSEC,
-            context.as_mut_ptr().cast(),
-            &mut len,
-        );
-    }
-    context.rebuild().ok();
-
-    let is_root = cred.uid == 0;
-    let is_shell = cred.uid == 2000;
-    let is_zygote = &context == "u:r:zygote:s0";
-
-    // 最小放行：root/shell/zygote 都允许连
-    if !is_root && !is_shell && !is_zygote {
-        client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
-        return;
-    }
-
-    let mut code = -1;
-    client.read_pod(&mut code).ok();
-
-    if !(0..RequestCode::END.repr).contains(&code) {
-        return;
-    }
-
-    // 拒绝 barrier 类（保持你原逻辑）
-    if code == RequestCode::_SYNC_BARRIER_.repr || code == RequestCode::_STAGE_BARRIER_.repr {
-        return;
-    }
-
-    let code = RequestCode { repr: code };
-
-    // 你要“足够权限”，那就更硬一点：除 CHECK_* 外都要求 root
-    match code {
-        RequestCode::CHECK_VERSION | RequestCode::CHECK_VERSION_CODE => {}
-        _ => {
-            if !is_root {
-                client.write_pod(&RespondCode::ROOT_REQUIRED.repr).log_ok();
-                return;
-            }
-        }
-    }
-
-    if client.write_pod(&RespondCode::OK.repr).is_err() {
-        return;
-    }
-
-    handle_request_sync(client, code);
-}
 
 fn daemon_entry() {
     set_nice_name(cstr!("magiskd"));
     android_logging();
 
-    // Block all signals（保命）
+    // Block all signals
     SigSet::all().thread_set_mask().log_ok();
 
-    // Swap stdio（保命：避免输出阻塞）
+    // Swap out the original stdio
     if let Ok(null) = cstr!("/dev/null").open(OFlag::O_WRONLY).log() {
         dup2_stdout(null.as_fd()).log_ok();
         dup2_stderr(null.as_fd()).log_ok();
@@ -255,7 +363,7 @@ fn daemon_entry() {
 
     setsid().log_ok();
 
-    // 强制 magisk context（权限更稳）
+    // Make sure the current context is magisk
     if let Ok(mut current) =
         cstr!("/proc/self/attr/current").open(OFlag::O_WRONLY | OFlag::O_CLOEXEC)
     {
@@ -265,20 +373,18 @@ fn daemon_entry() {
 
     start_log_daemon();
     magisk_logging();
-    info!("Magisk {MAGISK_FULL_VER} curlcute daemon started");
-    append_testlog("magiskd(curlcute) started");
-
-    // 判断模拟器（保留）
+    info!("Magisk {MAGISK_FULL_VER} daemon started");
+    //必要工作
+    //判断模拟器
     let is_emulator = get_prop(cstr!("ro.kernel.qemu")) == "1"
         || get_prop(cstr!("ro.boot.qemu")) == "1"
         || get_prop(cstr!("ro.product.device")).contains("vsoc");
-
-    // 读 RECOVERYMODE（保留）
+    //判断是不是rec
+    // Load config status
     let magisk_tmp = get_magisk_tmp();
     let mut tmp_path = cstr::buf::new::<64>()
         .join_path(magisk_tmp)
         .join_path(MAIN_CONFIG);
-
     let mut is_recovery = false;
     if let Ok(main_config) = tmp_path.open(OFlag::O_RDONLY | OFlag::O_CLOEXEC) {
         BufReader::new(main_config).for_each_prop(|key, val| {
@@ -290,13 +396,29 @@ fn daemon_entry() {
         });
     }
     tmp_path.truncate(magisk_tmp.len());
+    //
 
-    append_testlog(&format!("is_emulator={is_emulator} is_recovery={is_recovery}"));
+    let mut sdk_int = -1;
+    if let Ok(build_prop) = cstr!("/system/build.prop").open(OFlag::O_RDONLY | OFlag::O_CLOEXEC) {
+        BufReader::new(build_prop).for_each_prop(|key, val| {
+            if key == "ro.build.version.sdk" {
+                sdk_int = val.parse::<i32>().unwrap_or(-1);
+                return false;
+            }
+            true
+        });
+    }
+    if sdk_int < 0 {
+        // In case some devices do not store this info in build.prop, fallback to getprop
+        sdk_int = get_prop(cstr!("ro.build.version.sdk"))
+            .parse::<i32>()
+            .unwrap_or(-1);
+    }
+    info!("* Device API level: {sdk_int}");
 
-    // 恢复 tmp context（保命）
     restore_tmpcon().log_ok();
 
-    // cgroup 逃逸（保命）
+    // Escape from cgroup
     let pid = getpid().as_raw();
     switch_cgroup("/acct", pid);
     switch_cgroup("/dev/cg2_bpf", pid);
@@ -304,13 +426,13 @@ fn daemon_entry() {
     if get_prop(cstr!("ro.config.per_app_memcg")) != "false" {
         switch_cgroup("/dev/memcg/apps", pid);
     }
-
-    // Samsung workaround（保留）
+    //让自己变牛逼不然被杀
+    // Samsung workaround #7887
     if cstr!("/system_ext/app/mediatek-res/mediatek-res.apk").exists() {
         set_prop(cstr!("ro.vendor.mtk_model"), cstr!("0"));
     }
 
-    // Cleanup pre-init mounts（保命）
+    // Cleanup pre-init mounts
     tmp_path.append_path(ROOTMNT);
     if let Ok(mount_list) = tmp_path.open(OFlag::O_RDONLY | OFlag::O_CLOEXEC) {
         BufReader::new(mount_list).for_each_line(|line| {
@@ -322,39 +444,53 @@ fn daemon_entry() {
     }
     tmp_path.truncate(magisk_tmp.len());
 
-    // Remount rootfs as read-only if requested（保留）
+    // Remount rootfs as read-only if requested
     if std::env::var_os("REMOUNT_ROOT").is_some() {
         cstr!("/").remount_mount_flags(MsFlags::MS_RDONLY).log_ok();
         unsafe { std::env::remove_var("REMOUNT_ROOT") };
     }
 
-    // 清 pre-init overlay（保命/省内存）
+    // Remove all pre-init overlay files to free-up memory
     tmp_path.append_path(ROOTOVL);
     tmp_path.remove_all().ok();
     tmp_path.truncate(magisk_tmp.len());
 
-    // ✅ 启动 curl 小可爱（核心）
-    spawn_curl_worker_keepalive();
-
-    // 建 socket（保留：connect_daemon 依赖它）
+    let exe_attr = cstr!("/proc/self/exe")
+        .follow_link()
+        .get_attr()
+        .log()
+        .unwrap_or_default();
+    //建立全局单例
+    let daemon = MagiskD {
+        sdk_int,
+        is_emulator,
+        is_recovery,
+        exe_attr,
+        ..Default::default()
+    };
+    MAGISKD.set(daemon).ok();
+    //创建对外接口
     let sock_path = cstr::buf::new::<64>()
         .join_path(get_magisk_tmp())
         .join_path(MAIN_SOCKET);
     sock_path.remove().ok();
 
     let Ok(sock) = UnixListener::bind(&sock_path).log() else {
-        append_testlog("UnixListener bind failed");
         exit(1);
     };
 
     sock_path.follow_link().chmod(0o600).log_ok();
     sock_path.set_secontext(cstr!(MAGISK_FILE_CON)).log_ok();
+    //确保link完成
+    //下面可以自由发挥
+    spawn_boot_watcher();
 
-    append_testlog("socket ready, entering accept loop");
 
+    // Loop forever to listen for requests
+    let daemon = MagiskD::get();
     for client in sock.incoming() {
         if let Ok(client) = client.log() {
-            handle_requests(client);
+            daemon.handle_requests(client);
         } else {
             exit(1);
         }
@@ -373,9 +509,15 @@ pub fn connect_daemon(code: RequestCode, create: bool) -> LoggedResult<UnixStrea
         let res = RespondCode { repr: res };
         match res {
             RespondCode::OK => Ok(socket),
-            RespondCode::ROOT_REQUIRED => log_err!("Root is required for this operation"),
-            RespondCode::ACCESS_DENIED => log_err!("Access denied"),
-            _ => log_err!("Daemon error"),
+            RespondCode::ROOT_REQUIRED => {
+                log_err!("Root is required for this operation")
+            }
+            RespondCode::ACCESS_DENIED => {
+                log_err!("Accessed denied")
+            }
+            _ => {
+                log_err!("Daemon error")
+            }
         }
     }
 
@@ -399,7 +541,7 @@ pub fn connect_daemon(code: RequestCode, create: bool) -> LoggedResult<UnixStrea
                 exit(0);
             }
 
-            // retry connect
+            // In the client, we keep retry and connect to the socket
             loop {
                 if let Ok(socket) = UnixStream::connect(&sock_path) {
                     return send_request(code, socket);
