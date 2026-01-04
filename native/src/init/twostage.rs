@@ -1,3 +1,12 @@
+
+//这里是用来在第一阶段调用的
+//用来确保第二阶段的时候，启动的init确实是magiskinit
+//用来修改原来第一阶段cpio里面init的行为的
+//首先先用优雅的方式，做假，借刀杀人，直接挂magiskinit到/system/bin/init
+//如果不行，就实行强制措施，直接改二进制程序，把启动的第二阶段的init地址换了，换成面具的init的位置，面具的init做完事情之后再启动真的第二阶段init
+
+
+
 use crate::ffi::MagiskInit;
 use base::nix::fcntl::OFlag;
 use base::{LoggedResult, MappedFile, MutBytesExt, ResultExt, cstr, debug, error};

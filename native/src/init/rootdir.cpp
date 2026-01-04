@@ -40,13 +40,15 @@ static bool unxz(int fd, rust::Slice<const uint8_t> bytes) {
     return true;
 }
 
-// When return true, run patch_fissiond
+
 static bool patch_rc_scripts(const char *src_path, const char *tmp_path, bool writable) {
+    // 打开原始 rc 所在目录（/system/etc/init/hw 或 /）
     auto src_dir = xopen_dir(src_path);
     if (!src_dir) return false;
     int src_fd = dirfd(src_dir.get());
 
-    // If writable, directly modify the file in src_path, or else add to rootfs overlay
+    // writable=true：直接改原文件
+    // writable=false：写到 root overlay（systemless）
     auto dest_dir = writable ? [&] {
         return xopen_dir(src_path);
     }() : [&] {
@@ -58,83 +60,91 @@ static bool patch_rc_scripts(const char *src_path, const char *tmp_path, bool wr
     if (!dest_dir) return false;
     int dest_fd = dirfd(dest_dir.get());
 
-    // First patch init.rc
+    // ====== 先 patch init.rc ======
     {
         owned_fd src_rc = xopenat(src_fd, INIT_RC, O_RDONLY | O_CLOEXEC, 0);
         if (src_rc < 0) return false;
         if (writable) unlinkat(src_fd, INIT_RC, 0);
+
         auto dest_rc = xopen_file(
                 xopenat(dest_fd, INIT_RC, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0), "we");
         if (!dest_rc) return false;
-        LOGD("Patching " INIT_RC " in %s\n", src_path);
+
+        // 逐行读取原 init.rc
         file_readline(src_rc, [&dest_rc](Utf8CStr line) -> bool {
-            // Do not start vaultkeeper
-            if (line.sv().contains("start vaultkeeper")) {
-                LOGD("Remove vaultkeeper\n");
-                return true;
-            }
-            // Do not run flash_recovery
+            // 禁用部分厂商行为，避免干扰启动顺序
+            if (line.sv().contains("start vaultkeeper")) return true;
+
             if (line.sv().starts_with("service flash_recovery")) {
-                LOGD("Remove flash_recovery\n");
                 fprintf(dest_rc.get(), "service flash_recovery /system/bin/true\n");
                 return true;
             }
-            // Samsung's persist.sys.zygote.early will cause Zygote to start before post-fs-data
+
+            // 防止三星设备提前启动 zygote
             if (line.sv().starts_with("on property:persist.sys.zygote.early=")) {
-                LOGD("Invalidate persist.sys.zygote.early\n");
                 fprintf(dest_rc.get(), "on property:persist.sys.zygote.early.xxxxx=true\n");
                 return true;
             }
-            // Else just write the line
+
+            // 其他内容原样写回
             fprintf(dest_rc.get(), "%s", line.c_str());
             return true;
         });
 
         fprintf(dest_rc.get(), "\n");
 
-        // Inject custom rc scripts
+        // 注入 overlay.d 里收集到的自定义 rc
         for (auto &script : rc_list) {
-            // Replace template arguments of rc scripts with dynamic paths
             replace_all(script, "${MAGISKTMP}", tmp_path);
             fprintf(dest_rc.get(), "\n%s\n", script.data());
         }
         rc_list.clear();
 
-        // Inject Magisk rc scripts
+        // 注入 Magisk 自身的 rc（service magiskd / post-fs-data 等）
         rust::inject_magisk_rc(fileno(dest_rc.get()), tmp_path);
 
+        // 保留原 rc 的权限/属性
         fclone_attr(src_rc, fileno(dest_rc.get()));
     }
 
-    // Then patch init.zygote*.rc
+    // ====== 再 patch init.zygote*.rc ======
     for (dirent *entry; (entry = readdir(src_dir.get()));) {
-        {
-            auto name = std::string_view(entry->d_name);
-            if (!name.starts_with("init.zygote") || !name.ends_with(".rc")) continue;
-        }
+        auto name = std::string_view(entry->d_name);
+        if (!name.starts_with("init.zygote") || !name.ends_with(".rc")) continue;
+
         owned_fd src_rc = xopenat(src_fd, entry->d_name, O_RDONLY | O_CLOEXEC, 0);
         if (src_rc < 0) continue;
         if (writable) unlinkat(src_fd, entry->d_name, 0);
+
         auto dest_rc = xopen_file(
                 xopenat(dest_fd, entry->d_name, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0), "we");
         if (!dest_rc) continue;
-        LOGD("Patching %s in %s\n", entry->d_name, src_path);
+
+        // 给 zygote service 注入 onrestart 钩子
         file_readline(src_rc, [&dest_rc, &tmp_path](Utf8CStr line) -> bool {
             if (line.sv().starts_with("service zygote ")) {
-                LOGD("Inject zygote restart\n");
                 fprintf(dest_rc.get(), "%s", line.c_str());
                 fprintf(dest_rc.get(),
-                        "    onrestart exec " MAGISK_PROC_CON " 0 0 -- %s/magisk --zygote-restart\n", tmp_path);
+                        "    onrestart exec " MAGISK_PROC_CON
+                        " 0 0 -- %s/magisk --zygote-restart\n", tmp_path);
                 return true;
             }
             fprintf(dest_rc.get(), "%s", line.c_str());
             return true;
         });
+
         fclone_attr(src_rc, fileno(dest_rc.get()));
     }
 
+    // 如果系统存在 fission 相关 rc，后续需要 patch fissiond
     return faccessat(src_fd, "init.fission_host.rc", F_OK, 0) == 0;
 }
+
+
+
+
+
+
 
 void MagiskInit::patch_fissiond(const char *tmp_path) noexcept {
     {
