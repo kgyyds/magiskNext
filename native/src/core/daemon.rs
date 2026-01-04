@@ -178,94 +178,105 @@ impl MagiskD {
     }
 
     fn handle_requests(&'static self, mut client: UnixStream) {
-        let Ok(cred) = client.peer_cred() else {
-            // Client died
-            return;
-        };
+    let Ok(cred) = client.peer_cred() else {
+        // Client died
+        return;
+    };
 
-        // There are no abstractions for SO_PEERSEC yet, call the raw C API.
-        let mut context = cstr::buf::new::<256>();
-        unsafe {
-            let mut len: libc::socklen_t = context.capacity().as_();
-            libc::getsockopt(
-                client.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERSEC,
-                context.as_mut_ptr().cast(),
-                &mut len,
-            );
+    // There are no abstractions for SO_PEERSEC yet, call the raw C API.
+    let mut context = cstr::buf::new::<256>();
+    unsafe {
+        let mut len: libc::socklen_t = context.capacity().as_();
+        libc::getsockopt(
+            client.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERSEC,
+            context.as_mut_ptr().cast(),
+            &mut len,
+        );
+    }
+    context.rebuild().ok();
+
+    let is_root = cred.uid == 0;
+    let is_shell = cred.uid == 2000;
+    let is_zygote = &context == "u:r:zygote:s0";
+
+    if !is_root && !is_zygote && !self.is_client(cred.pid.unwrap_or(-1)) {
+        // Unsupported client state
+        client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+        return;
+    }
+
+    let mut code = -1;
+    client.read_pod(&mut code).ok();
+    if !(0..RequestCode::END.repr).contains(&code)
+        || code == RequestCode::_SYNC_BARRIER_.repr
+        || code == RequestCode::_STAGE_BARRIER_.repr
+    {
+        // Unknown request code
+        return;
+    }
+
+    let code = RequestCode { repr: code };
+
+    // Permission checks
+    match code {
+        RequestCode::POST_FS_DATA
+        | RequestCode::LATE_START
+        | RequestCode::BOOT_COMPLETE
+        | RequestCode::ZYGOTE_RESTART
+        | RequestCode::SQLITE_CMD
+        | RequestCode::DENYLIST
+        | RequestCode::STOP_DAEMON => {
+            if !is_root {
+                client.write_pod(&RespondCode::ROOT_REQUIRED.repr).log_ok();
+                return;
+            }
         }
-        context.rebuild().ok();
+        RequestCode::REMOVE_MODULES => {
+            if !is_root && !is_shell {
+                // Only allow root and ADB shell to remove modules
+                client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+                return;
+            }
+        }
+        RequestCode::ZYGISK => {
+            if !is_zygote {
+                // Invalid client context
+                client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+                return;
+            }
+        }
+        _ => {}
+    }
 
-        let is_root = cred.uid == 0;
-        let is_shell = cred.uid == 2000;
-        let is_zygote = &context == "u:r:zygote:s0";
-
-        if !is_root && !is_zygote && !self.is_client(cred.pid.unwrap_or(-1)) {
-            // Unsupported client state
+    // ===== Feature gate: disable Zygisk completely (before replying OK) =====
+    match code {
+        // Zygisk is not supported in your build.
+        RequestCode::ZYGISK | RequestCode::ZYGOTE_RESTART => {
             client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
             return;
         }
-
-        let mut code = -1;
-        client.read_pod(&mut code).ok();
-        if !(0..RequestCode::END.repr).contains(&code)
-            || code == RequestCode::_SYNC_BARRIER_.repr
-            || code == RequestCode::_STAGE_BARRIER_.repr
-        {
-            // Unknown request code
-            return;
-        }
-
-        let code = RequestCode { repr: code };
-
-        // Permission checks
-        match code {
-            RequestCode::POST_FS_DATA
-            | RequestCode::LATE_START
-            | RequestCode::BOOT_COMPLETE
-            | RequestCode::ZYGOTE_RESTART
-            | RequestCode::SQLITE_CMD
-            | RequestCode::DENYLIST
-            | RequestCode::STOP_DAEMON => {
-                if !is_root {
-                    client.write_pod(&RespondCode::ROOT_REQUIRED.repr).log_ok();
-                    return;
-                }
-            }
-            RequestCode::REMOVE_MODULES => {
-                if !is_root && !is_shell {
-                    // Only allow root and ADB shell to remove modules
-                    client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
-                    return;
-                }
-            }
-            RequestCode::ZYGISK => {
-                if !is_zygote {
-                    // Invalid client context
-                    client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
-                    return;
-                }
-            }
-            _ => {}
-        }
-
-        if client.write_pod(&RespondCode::OK.repr).is_err() {
-            return;
-        }
-
-        if code.repr < RequestCode::_SYNC_BARRIER_.repr {
-            self.handle_request_sync(client, code)
-        } else if code.repr < RequestCode::_STAGE_BARRIER_.repr {
-            ThreadPool::exec_task(move || {
-                self.handle_request_async(client, code, cred);
-            })
-        } else {
-            ThreadPool::exec_task(move || {
-                self.boot_stage_handler(client, code);
-            })
-        }
+        _ => {}
     }
+
+    if client.write_pod(&RespondCode::OK.repr).is_err() {
+        return;
+    }
+
+    if code.repr < RequestCode::_SYNC_BARRIER_.repr {
+        self.handle_request_sync(client, code)
+    } else if code.repr < RequestCode::_STAGE_BARRIER_.repr {
+        ThreadPool::exec_task(move || {
+            self.handle_request_async(client, code, cred);
+        })
+    } else {
+        ThreadPool::exec_task(move || {
+            self.boot_stage_handler(client, code);
+        })
+    }
+}
+           
 }
 
 fn switch_cgroup(cgroup: &str, pid: i32) {
