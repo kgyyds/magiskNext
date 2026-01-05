@@ -299,7 +299,7 @@ impl MagiskInit {
         if Self::early_prerequisites_ok() {
             info!("KernelSU prerequisites met, attempting to load module...");
             if let Err(e) = self.load_kernelsu_module() {
-                info!("Failed to load kernelsu.ko: {:?}", e);
+                info!("Failed to load kernelsu.ko: {}", e);
             }
         } else {
             info!("KernelSU prerequisites not met, skipping module load");
