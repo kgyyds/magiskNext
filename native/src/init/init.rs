@@ -45,35 +45,34 @@ impl MagiskInit {
     //3 kernelsu.ko存在，并且可以读取
     //这个是检测函数，用来检测sys proc kernelsu.ko存在不？
     fn early_prerequisites_ok() -> bool {
+    use std::path::Path;
+    
     // 1) /proc 是否已挂载
-    // 使用 MagiskInit 同款判定方式
-    if !cstr!("/proc/cmdline").exists() {
+    if !Path::new("/proc/cmdline").exists() {
         info!("early_step skip: /proc not mounted");
         return false;
     }
 
     // 2) /sys 是否已挂载
-    // 使用 MagiskInit 同款判定方式
-    if !cstr!("/sys/block").exists() {
+    if !Path::new("/sys/block").exists() {
         info!("early_step skip: /sys not mounted");
         return false;
     }
 
     // 3) kernelsu.ko 是否存在（且是普通文件）
-    let ko = cstr!("/kernelsu.ko");
-    if !ko.exists() {
+    let ko_path = Path::new("/kernelsu.ko");
+    if !ko_path.exists() {
         info!("early_step skip: /kernelsu.ko not found");
         return false;
     }
 
-    if !ko.is_file() {
+    if !ko_path.is_file() {
         info!("early_step skip: /kernelsu.ko is not a regular file");
         return false;
     }
 
-    //如果都通过，就返回t，让if通过
     true
-    }
+}
     //接下来正式启动ko注入，兼容lkm模式的ksu类root方案的
     // 加载 kernelsu.ko 的核心函数
     fn load_kernelsu_module(&self) -> LoggedResult<()> {
@@ -95,7 +94,7 @@ impl MagiskInit {
         let kernel_symbols = match self.parse_kallsyms() {
             Ok(symbols) => symbols,
             Err(e) => {
-                info!("Failed to parse kallsyms: {}", e);
+                info!("Failed to parse kallsyms: {:?}", e);
                 return Err(e.into());
             }
         };
@@ -214,7 +213,7 @@ impl MagiskInit {
         if Self::early_prerequisites_ok() {
             info!("KernelSU prerequisites met, attempting to load module...");
             if let Err(e) = self.load_kernelsu_module() {
-                info!("Failed to load kernelsu.ko: {}", e);
+                info!("Failed to load kernelsu.ko: {:?}", e);
             }
         } else {
             info!("KernelSU prerequisites not met, skipping module load");
