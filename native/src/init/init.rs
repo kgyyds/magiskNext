@@ -8,6 +8,7 @@ use std::ffi::{CStr, c_char};
 use std::ptr::null;
 
 
+
 // 添加必要的导入
 use goblin::elf::{Elf, section_header, sym::Sym};
 use scroll::{Pwrite, ctx::SizeWith};
@@ -15,7 +16,6 @@ use std::collections::HashMap;
 use std::fs;
 use syscalls::{Sysno, syscall};
 use std::path::Path;
-use rustix::process::getpid as rustix_getpid;  // 用于进程检查
 
 impl MagiskInit {
     fn new(argv: *mut *mut c_char) -> Self {
@@ -50,6 +50,8 @@ impl MagiskInit {
 
 
     
+
+
     fn early_prerequisites_ok() -> bool {
         // 1) /proc 是否已挂载
         if !Path::new("/proc/cmdline").exists() {
@@ -78,7 +80,7 @@ impl MagiskInit {
         true
     }
     
-    // 检查KernelSU是否已经加载（与原代码一致）
+    // 检查KernelSU是否已经加载（纯syscall实现）
     fn has_kernelsu(&self) -> bool {
         // 检查v2版本
         const KSU_INSTALL_MAGIC1: u32 = 0xDEADBEEF;
@@ -147,12 +149,14 @@ impl MagiskInit {
         false
     }
     
-    // 加载 kernelsu.ko 的核心函数（与原代码一致）
+    // 加载 kernelsu.ko 的核心函数（纯syscall实现）
     fn load_kernelsu_module(&self) -> LoggedResult<()> {
-        // check if self is init process(pid == 1) - 与原代码一致
-        if !rustix_getpid().is_init() {
-            // 注意：这里不能使用anyhow::bail!，要适应LoggedResult
-            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Invalid process").into());
+        // check if self is init process(pid == 1) - 使用base::libc::getpid
+        unsafe {
+            if getpid() != 1 {
+                info!("Not running as init (pid=1), skip loading KernelSU");
+                return Ok(());
+            }
         }
 
         info!("Loading kernelsu.ko...");
@@ -188,8 +192,8 @@ impl MagiskInit {
             
             // 从内核符号表中查找对应的地址
             let Some(real_addr) = kernel_symbols.get(name) else {
-                // 与原代码一致，使用warn级别
-                log::warn!("Cannot find symbol: {}", name);
+                // 使用info!（Magisk风格）
+                info!("Cannot find symbol: {}", name);
                 continue;
             };
             
@@ -212,18 +216,32 @@ impl MagiskInit {
             buffer.pwrite_with(sym, offset, ctx)?;
         }
         
-        // 使用rustix::system::init_module（与原代码一致）
-        use rustix::system::init_module;
-        use rustix::cstr;
-    
-        init_module(&buffer, cstr!(""))?;
-        info!("kernelsu.ko loaded successfully!");
-        Ok(())
+        // 使用syscall!加载模块（完全避免rustix依赖）
+        let params = cstr!("").as_ptr();
+        
+        match unsafe {
+            syscall!(
+                Sysno::init_module,
+                buffer.as_ptr() as *const _,
+                buffer.len(),
+                params
+            )
+        } {
+            Ok(_) => {
+                info!("kernelsu.ko loaded successfully!");
+                Ok(())
+            }
+            Err(e) => {
+                info!("init_module syscall failed: {}", e);
+                // 转换为std::io::Error以便使用Magisk的错误处理
+                Err(std::io::Error::last_os_error().into())
+            }
+        }
     }
     
-    // 解析/proc/kallsyms（与原代码完全一致）
+    // 解析/proc/kallsyms（与原KernelSU代码逻辑一致，但用std::fs代替rustix）
     fn parse_kallsyms(&self) -> LoggedResult<HashMap<String, u64>> {
-        // 使用RAII方式管理kptr_restrict（与原代码一致）
+        // 使用RAII方式管理kptr_restrict
         struct KptrGuard {
             original_value: String,
         }
@@ -272,7 +290,7 @@ impl MagiskInit {
     
     // 尝试加载KernelSU模块（如果条件满足）
     fn try_load_kernelsu(&self) {
-        // 首先检查KernelSU是否已经加载（与原代码一致）
+        // 首先检查KernelSU是否已经加载
         if self.has_kernelsu() {
             info!("KernelSU may be already loaded in kernel, skip!");
             return;
@@ -281,15 +299,14 @@ impl MagiskInit {
         if Self::early_prerequisites_ok() {
             info!("KernelSU prerequisites met, attempting to load module...");
             if let Err(e) = self.load_kernelsu_module() {
-                log::error!("Cannot load kernelsu.ko: {:?}", e);
+                info!("Failed to load kernelsu.ko: {:?}", e);
             }
         } else {
             info!("KernelSU prerequisites not met, skipping module load");
         }
     }
     
-    
-    
+    //已完成了ksu的逻辑加载。等待直接调用函数。
     
     
     
