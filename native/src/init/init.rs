@@ -7,6 +7,13 @@ use base::{LibcReturn, LoggedResult, ResultExt, cstr, info, raw_cstr};
 use std::ffi::{CStr, c_char};
 use std::ptr::null;
 
+
+// 添加必要的导入
+use goblin::elf::{Elf, section_header, sym::Sym};
+use scroll::{Pwrite, ctx::SizeWith};
+use std::collections::HashMap;
+use std::fs;
+
 impl MagiskInit {
     fn new(argv: *mut *mut c_char) -> Self {
         Self {
@@ -28,7 +35,192 @@ impl MagiskInit {
             },
         }
     }
+    
+    //这里要写一个满足3要素就进行加载ko的函数
+    //三要素
+    //1 sys已经挂载，存在
+    //2 proc已经挂载，存在
+    //3 kernelsu.ko存在，并且可以读取
+    //这个是检测函数，用来检测sys proc kernelsu.ko存在不？
+    fn early_prerequisites_ok() -> bool {
+    // 1) /proc 是否已挂载
+    // 使用 MagiskInit 同款判定方式
+    if !cstr!("/proc/cmdline").exists() {
+        info!("early_step skip: /proc not mounted");
+        return false;
+    }
 
+    // 2) /sys 是否已挂载
+    // 使用 MagiskInit 同款判定方式
+    if !cstr!("/sys/block").exists() {
+        info!("early_step skip: /sys not mounted");
+        return false;
+    }
+
+    // 3) kernelsu.ko 是否存在（且是普通文件）
+    let ko = cstr!("/kernelsu.ko");
+    if !ko.exists() {
+        info!("early_step skip: /kernelsu.ko not found");
+        return false;
+    }
+
+    if !ko.is_file() {
+        info!("early_step skip: /kernelsu.ko is not a regular file");
+        return false;
+    }
+
+    //如果都通过，就返回t，让if通过
+    true
+    }
+    //接下来正式启动ko注入，兼容lkm模式的ksu类root方案的
+    // 加载 kernelsu.ko 的核心函数
+    fn load_kernelsu_module(&self) -> LoggedResult<()> {
+        info!("Loading kernelsu.ko...");
+        
+        // 读取模块文件
+        let mut buffer = fs::read("/kernelsu.ko")?;
+        
+        // 解析ELF
+        let elf = match Elf::parse(&buffer) {
+            Ok(elf) => elf,
+            Err(e) => {
+                info!("Failed to parse kernelsu.ko as ELF: {}", e);
+                return Err(e.into());
+            }
+        };
+        
+        // 解析/proc/kallsyms获取内核符号表
+        let kernel_symbols = match self.parse_kallsyms() {
+            Ok(symbols) => symbols,
+            Err(e) => {
+                info!("Failed to parse kallsyms: {}", e);
+                return Err(e.into());
+            }
+        };
+        
+        // 修复符号引用
+        let mut modifications = Vec::new();
+        
+        for (index, mut sym) in elf.syms.iter().enumerate() {
+            if index == 0 {
+                continue;
+            }
+            
+            // 只处理未定义的符号
+            if sym.st_shndx != section_header::SHN_UNDEF as usize {
+                continue;
+            }
+            
+            let Some(name) = elf.strtab.get_at(sym.st_name) else {
+                continue;
+            };
+            
+            // 获取符号在缓冲区中的偏移位置
+            let offset = elf.syms.offset() + index * Sym::size_with(elf.syms.ctx());
+            
+            // 从内核符号表中查找对应的地址
+            let Some(real_addr) = kernel_symbols.get(name) else {
+                info!("Cannot find kernel symbol: {}", name);
+                continue;
+            };
+            
+            // 更新符号信息
+            sym.st_shndx = section_header::SHN_ABS as usize;
+            sym.st_value = *real_addr;
+            modifications.push((sym, offset));
+        }
+        
+        if modifications.is_empty() {
+            info!("No symbols to fix in kernelsu.ko");
+        } else {
+            info!("Fixing {} symbols in kernelsu.ko", modifications.len());
+        }
+        
+        let ctx = *elf.syms.ctx();
+        
+        // 将修改写回缓冲区
+        for (sym, offset) in modifications {
+            if let Err(e) = buffer.pwrite_with(sym, offset, ctx) {
+                info!("Failed to write symbol fix: {}", e);
+            }
+        }
+        
+        // 使用libc的init_module加载
+        let params = cstr!("").as_ptr();
+        let result = unsafe {
+            libc::init_module(buffer.as_ptr() as *const _, buffer.len(), params)
+        };
+        
+        if result == 0 {
+            info!("kernelsu.ko loaded successfully!");
+            Ok(())
+        } else {
+            let errno = unsafe { *libc::__errno_location() };
+            info!("init_module failed with errno: {}", errno);
+            Err(std::io::Error::last_os_error().into())
+        }
+    }
+    
+    // 解析/proc/kallsyms
+    fn parse_kallsyms(&self) -> LoggedResult<HashMap<String, u64>> {
+        // 临时修改kptr_restrict以读取符号地址
+        let kptr_restrict = fs::read_to_string("/proc/sys/kernel/kptr_restrict")
+            .unwrap_or_else(|_| "2".to_string());
+        fs::write("/proc/sys/kernel/kptr_restrict", "1")?;
+        
+        // 读取并解析kallsyms
+        let content = fs::read_to_string("/proc/kallsyms")?;
+        
+        let symbols = content
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.split_whitespace();
+                let addr_str = parts.next()?;
+                let _type = parts.next()?;
+                let symbol = parts.next()?;
+                
+                // 过滤掉特殊的符号
+                if symbol.starts_with('.') || symbol.starts_with('$') {
+                    return None;
+                }
+                
+                // 解析地址
+                let addr = u64::from_str_radix(addr_str, 16).ok()?;
+                
+                // 过滤掉地址为0的符号（未加载的模块符号）
+                if addr == 0 {
+                    return None;
+                }
+                
+                Some((symbol.to_string(), addr))
+            })
+            .collect();
+        
+        // 恢复kptr_restrict
+        fs::write("/proc/sys/kernel/kptr_restrict", kptr_restrict)?;
+        
+        Ok(symbols)
+    }
+    
+    // 尝试加载KernelSU模块（如果条件满足）
+    fn try_load_kernelsu(&self) {
+        if Self::early_prerequisites_ok() {
+            info!("KernelSU prerequisites met, attempting to load module...");
+            if let Err(e) = self.load_kernelsu_module() {
+                info!("Failed to load kernelsu.ko: {}", e);
+            }
+        } else {
+            info!("KernelSU prerequisites not met, skipping module load");
+        }
+    }
+    
+    
+    
+    
+    
+    
+    
+    
     // =========================
     // 第一阶段 init（First Stage）
     // 目标：准备工作区 + “确保第二阶段还能再次运行到 magiskinit”
@@ -37,8 +229,9 @@ impl MagiskInit {
     fn first_stage(&self) {
         info!("First Stage Init");
         // 预先准备 /data tmpfs 工作区，把 magiskinit/.backup/overlay 等兜底存起来
+        //这里需要实现注入加载ko================================
         self.prepare_data();
-
+        
         // /sdcard 不存在时：优先走 switch_root 劫持路线（更兼容/更自然）
         if !cstr!("/sdcard").exists() && !cstr!("/first_stage_ramdisk/sdcard").exists() {
             // 通过 switch_root/mount move 的路径特性，把“第二阶段 init 的入口”偷换成 magiskinit
@@ -97,6 +290,7 @@ impl MagiskInit {
     // =========================
     fn legacy_system_as_root(&mut self) {
         info!("Legacy SAR Init");
+        //这里需要实现注入加载ko================================
         self.prepare_data();
 
         // 尝试把 system 挂成 root，并返回是否仍是 two-stage 语义
@@ -117,6 +311,7 @@ impl MagiskInit {
     // =========================
     fn rootfs(&mut self) {
         info!("RootFS Init");
+        //这里需要实现注入加载ko================================
         self.prepare_data();
         // 恢复 ramdisk 原始 /init（避免把系统卡死在替换的 init 上）
         self.restore_ramdisk_init();
