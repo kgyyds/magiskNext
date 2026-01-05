@@ -148,14 +148,15 @@ impl MagiskInit {
         // 使用libc的init_module加载
         let params = cstr!("").as_ptr();
         let result = unsafe {
-            libc::init_module(buffer.as_ptr() as *const _, buffer.len(), params)
+            base::libc::init_module(buffer.as_ptr() as *const _, buffer.len(), params)
         };
         
         if result == 0 {
             info!("kernelsu.ko loaded successfully!");
             Ok(())
         } else {
-            let errno = unsafe { *libc::__errno_location() };
+            
+            let errno = unsafe { *base::libc::__errno_location() };
             info!("init_module failed with errno: {}", errno);
             Err(std::io::Error::last_os_error().into())
         }
