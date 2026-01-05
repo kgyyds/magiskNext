@@ -145,68 +145,51 @@ impl MagiskInit {
                 info!("Failed to write symbol fix: {}", e);
             }
         }
-        
-        // 使用libc的init_module加载
-        let params = cstr!("").as_ptr();
-       match unsafe {
-        syscall!(
-            Sysno::init_module,
-            buffer.as_ptr() as *const _,
-            buffer.len(),
-            params
-        )
-    } {
-        Ok(_) => {
-            info!("kernelsu.ko loaded successfully!");
-            Ok(())
-        }
-        Err(e) => {
-            info!("init_module failed: {}", e);
-            Err(e.into())
-        }
-    }
+        // 使用rustix::system::init_module（与原代码一致）
+        use rustix::system::init_module;
+        use rustix::cstr;
+    
+        init_module(&buffer, cstr!(""))?;
+        info!("kernelsu.ko loaded successfully!");
+        Ok(())
+
     }
     
-    // 解析/proc/kallsyms
     fn parse_kallsyms(&self) -> LoggedResult<HashMap<String, u64>> {
-        // 临时修改kptr_restrict以读取符号地址
-        let kptr_restrict = fs::read_to_string("/proc/sys/kernel/kptr_restrict")
-            .unwrap_or_else(|_| "2".to_string());
-        fs::write("/proc/sys/kernel/kptr_restrict", "1")?;
-        
-        // 读取并解析kallsyms
-        let content = fs::read_to_string("/proc/kallsyms")?;
-        
-        let symbols = content
-            .lines()
-            .filter_map(|line| {
-                let mut parts = line.split_whitespace();
-                let addr_str = parts.next()?;
-                let _type = parts.next()?;
-                let symbol = parts.next()?;
-                
-                // 过滤掉特殊的符号
-                if symbol.starts_with('.') || symbol.starts_with('$') {
-                    return None;
-                }
-                
-                // 解析地址
-                let addr = u64::from_str_radix(addr_str, 16).ok()?;
-                
-                // 过滤掉地址为0的符号（未加载的模块符号）
-                if addr == 0 {
-                    return None;
-                }
-                
-                Some((symbol.to_string(), addr))
-            })
-            .collect();
-        
-        // 恢复kptr_restrict
-        fs::write("/proc/sys/kernel/kptr_restrict", kptr_restrict)?;
-        
-        Ok(symbols)
-    }
+    // 使用RAII方式管理kptr_restrict（与原代码一致）
+    let kptr_restrict = fs::read_to_string("/proc/sys/kernel/kptr_restrict")
+        .unwrap_or_else(|_| "2".to_string());
+    fs::write("/proc/sys/kernel/kptr_restrict", "1")?;
+    
+    // 读取并解析kallsyms（与原代码逻辑完全一致）
+    let content = fs::read_to_string("/proc/kallsyms")?;
+    
+    let symbols = content
+        .lines()
+        .map(|line| line.split_whitespace())
+        .filter_map(|mut splits| {
+            splits
+                .next()
+                .and_then(|addr| u64::from_str_radix(addr, 16).ok())
+                .and_then(|addr| splits.nth(1).map(|symbol| (symbol, addr)))
+        })
+        .map(|(symbol, addr)| {
+            (
+                symbol
+                    .find('$')
+                    .or_else(|| symbol.find(".llvm."))
+                    .map_or(symbol, |pos| &symbol[0..pos])
+                    .to_owned(),
+                addr,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    
+    // 恢复kptr_restrict
+    fs::write("/proc/sys/kernel/kptr_restrict", kptr_restrict)?;
+    
+    Ok(symbols)
+}
     
     // 尝试加载KernelSU模块（如果条件满足）
     fn try_load_kernelsu(&self) {
