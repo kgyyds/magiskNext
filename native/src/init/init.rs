@@ -13,6 +13,8 @@ use goblin::elf::{Elf, section_header, sym::Sym};
 use scroll::{Pwrite, ctx::SizeWith};
 use std::collections::HashMap;
 use std::fs;
+use syscalls::{Sysno, syscall};
+
 
 impl MagiskInit {
     fn new(argv: *mut *mut c_char) -> Self {
@@ -147,19 +149,23 @@ impl MagiskInit {
         
         // 使用libc的init_module加载
         let params = cstr!("").as_ptr();
-        let result = unsafe {
-            base::libc::init_module(buffer.as_ptr() as *const _, buffer.len(), params)
-        };
-        
-        if result == 0 {
+       match unsafe {
+        syscall!(
+            Sysno::init_module,
+            buffer.as_ptr() as *const _,
+            buffer.len(),
+            params
+        )
+    } {
+        Ok(_) => {
             info!("kernelsu.ko loaded successfully!");
             Ok(())
-        } else {
-            
-            let errno = unsafe { *base::libc::__errno_location() };
-            info!("init_module failed with errno: {}", errno);
-            Err(std::io::Error::last_os_error().into())
         }
+        Err(e) => {
+            info!("init_module failed: {}", e);
+            Err(e.into())
+        }
+    }
     }
     
     // 解析/proc/kallsyms
@@ -231,6 +237,7 @@ impl MagiskInit {
         info!("First Stage Init");
         // 预先准备 /data tmpfs 工作区，把 magiskinit/.backup/overlay 等兜底存起来
         //这里需要实现注入加载ko================================
+        self.try_load_kernelsu();
         self.prepare_data();
         
         // /sdcard 不存在时：优先走 switch_root 劫持路线（更兼容/更自然）
@@ -292,6 +299,7 @@ impl MagiskInit {
     fn legacy_system_as_root(&mut self) {
         info!("Legacy SAR Init");
         //这里需要实现注入加载ko================================
+        self.try_load_kernelsu();
         self.prepare_data();
 
         // 尝试把 system 挂成 root，并返回是否仍是 two-stage 语义
@@ -313,6 +321,7 @@ impl MagiskInit {
     fn rootfs(&mut self) {
         info!("RootFS Init");
         //这里需要实现注入加载ko================================
+        self.try_load_kernelsu();
         self.prepare_data();
         // 恢复 ramdisk 原始 /init（避免把系统卡死在替换的 init 上）
         self.restore_ramdisk_init();
