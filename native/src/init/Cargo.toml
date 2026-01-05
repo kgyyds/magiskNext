@@ -23,5 +23,5 @@ num-traits = { workspace = true }
 goblin = "0.8.0"        # ELF文件解析
 scroll = "0.12.0"       # 二进制数据操作
 anyhow = "1.0.85"       # 错误处理
-syscalls = "0.6.26"     # 系统调用
-kernlog = "0.1.0"       # 内核日志（如果setup_kmsg中使用）
+syscalls = "0.7"     # 系统调用
+#kernlog = "0.1.0"       # 内核日志（如果setup_kmsg中使用）
