@@ -14,7 +14,8 @@ use scroll::{Pwrite, ctx::SizeWith};
 use std::collections::HashMap;
 use std::fs;
 use syscalls::{Sysno, syscall};
-
+use std::path::Path;
+use rustix::process::getpid as rustix_getpid;  // 用于进程检查
 
 impl MagiskInit {
     fn new(argv: *mut *mut c_char) -> Self {
@@ -44,60 +45,126 @@ impl MagiskInit {
     //2 proc已经挂载，存在
     //3 kernelsu.ko存在，并且可以读取
     //这个是检测函数，用来检测sys proc kernelsu.ko存在不？
-    fn early_prerequisites_ok() -> bool {
-    use std::path::Path;
+
+
+
+
     
-    // 1) /proc 是否已挂载
-    if !Path::new("/proc/cmdline").exists() {
-        info!("early_step skip: /proc not mounted");
-        return false;
-    }
+    fn early_prerequisites_ok() -> bool {
+        // 1) /proc 是否已挂载
+        if !Path::new("/proc/cmdline").exists() {
+            info!("early_step skip: /proc not mounted");
+            return false;
+        }
 
-    // 2) /sys 是否已挂载
-    if !Path::new("/sys/block").exists() {
-        info!("early_step skip: /sys not mounted");
-        return false;
-    }
+        // 2) /sys 是否已挂载
+        if !Path::new("/sys/block").exists() {
+            info!("early_step skip: /sys not mounted");
+            return false;
+        }
 
-    // 3) kernelsu.ko 是否存在（且是普通文件）
-    let ko_path = Path::new("/kernelsu.ko");
-    if !ko_path.exists() {
-        info!("early_step skip: /kernelsu.ko not found");
-        return false;
-    }
+        // 3) kernelsu.ko 是否存在（且是普通文件）
+        let ko_path = Path::new("/kernelsu.ko");
+        if !ko_path.exists() {
+            info!("early_step skip: /kernelsu.ko not found");
+            return false;
+        }
 
-    if !ko_path.is_file() {
-        info!("early_step skip: /kernelsu.ko is not a regular file");
-        return false;
-    }
+        if !ko_path.is_file() {
+            info!("early_step skip: /kernelsu.ko is not a regular file");
+            return false;
+        }
 
-    true
-}
-    //接下来正式启动ko注入，兼容lkm模式的ksu类root方案的
-    // 加载 kernelsu.ko 的核心函数
+        true
+    }
+    
+    // 检查KernelSU是否已经加载（与原代码一致）
+    fn has_kernelsu(&self) -> bool {
+        // 检查v2版本
+        const KSU_INSTALL_MAGIC1: u32 = 0xDEADBEEF;
+        const KSU_INSTALL_MAGIC2: u32 = 0xCAFEBABE;
+        const KSU_IOCTL_GET_INFO: u32 = 0x80004b02;
+
+        #[repr(C)]
+        #[derive(Default)]
+        struct GetInfoCmd {
+            version: u32,
+            flags: u32,
+        }
+
+        // 尝试新的方法：使用reboot系统调用获取驱动fd
+        let mut fd: i32 = -1;
+        unsafe {
+            let _ = syscall!(
+                Sysno::reboot,
+                KSU_INSTALL_MAGIC1,
+                KSU_INSTALL_MAGIC2,
+                0,
+                std::ptr::addr_of_mut!(fd)
+            );
+        }
+
+        let version = if fd >= 0 {
+            // 新方法：尝试通过ioctl获取版本信息
+            let mut cmd = GetInfoCmd::default();
+            let version = unsafe {
+                let ret = syscall!(Sysno::ioctl, fd, KSU_IOCTL_GET_INFO, &mut cmd as *mut _);
+                match ret {
+                    Ok(_) => cmd.version,
+                    Err(_) => 0,
+                }
+            };
+            unsafe {
+                let _ = syscall!(Sysno::close, fd);
+            }
+            version
+        } else {
+            0
+        };
+
+        if version != 0 {
+            info!("KernelSU v2 detected, version: {}", version);
+            return true;
+        }
+
+        // 检查legacy版本
+        let mut legacy_version = 0;
+        const CMD_GET_VERSION: i32 = 2;
+        unsafe {
+            let _ = syscall!(
+                Sysno::prctl,
+                0xDEADBEEF,
+                CMD_GET_VERSION,
+                std::ptr::addr_of_mut!(legacy_version)
+            );
+        }
+
+        if legacy_version != 0 {
+            info!("KernelSU legacy detected, version: {}", legacy_version);
+            return true;
+        }
+
+        false
+    }
+    
+    // 加载 kernelsu.ko 的核心函数（与原代码一致）
     fn load_kernelsu_module(&self) -> LoggedResult<()> {
+        // check if self is init process(pid == 1) - 与原代码一致
+        if !rustix_getpid().is_init() {
+            // 注意：这里不能使用anyhow::bail!，要适应LoggedResult
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Invalid process").into());
+        }
+
         info!("Loading kernelsu.ko...");
         
         // 读取模块文件
         let mut buffer = fs::read("/kernelsu.ko")?;
         
         // 解析ELF
-        let elf = match Elf::parse(&buffer) {
-            Ok(elf) => elf,
-            Err(e) => {
-                info!("Failed to parse kernelsu.ko as ELF: {}", e);
-                return Err(e.into());
-            }
-        };
+        let elf = Elf::parse(&buffer)?;
         
         // 解析/proc/kallsyms获取内核符号表
-        let kernel_symbols = match self.parse_kallsyms() {
-            Ok(symbols) => symbols,
-            Err(e) => {
-                info!("Failed to parse kallsyms: {:?}", e);
-                return Err(e.into());
-            }
-        };
+        let kernel_symbols = self.parse_kallsyms()?;
         
         // 修复符号引用
         let mut modifications = Vec::new();
@@ -121,7 +188,8 @@ impl MagiskInit {
             
             // 从内核符号表中查找对应的地址
             let Some(real_addr) = kernel_symbols.get(name) else {
-                info!("Cannot find kernel symbol: {}", name);
+                // 与原代码一致，使用warn级别
+                log::warn!("Cannot find symbol: {}", name);
                 continue;
             };
             
@@ -141,10 +209,9 @@ impl MagiskInit {
         
         // 将修改写回缓冲区
         for (sym, offset) in modifications {
-            if let Err(e) = buffer.pwrite_with(sym, offset, ctx) {
-                info!("Failed to write symbol fix: {}", e);
-            }
+            buffer.pwrite_with(sym, offset, ctx)?;
         }
+        
         // 使用rustix::system::init_module（与原代码一致）
         use rustix::system::init_module;
         use rustix::cstr;
@@ -152,58 +219,74 @@ impl MagiskInit {
         init_module(&buffer, cstr!(""))?;
         info!("kernelsu.ko loaded successfully!");
         Ok(())
-
     }
     
+    // 解析/proc/kallsyms（与原代码完全一致）
     fn parse_kallsyms(&self) -> LoggedResult<HashMap<String, u64>> {
-    // 使用RAII方式管理kptr_restrict（与原代码一致）
-    let kptr_restrict = fs::read_to_string("/proc/sys/kernel/kptr_restrict")
-        .unwrap_or_else(|_| "2".to_string());
-    fs::write("/proc/sys/kernel/kptr_restrict", "1")?;
-    
-    // 读取并解析kallsyms（与原代码逻辑完全一致）
-    let content = fs::read_to_string("/proc/kallsyms")?;
-    
-    let symbols = content
-        .lines()
-        .map(|line| line.split_whitespace())
-        .filter_map(|mut splits| {
-            splits
-                .next()
-                .and_then(|addr| u64::from_str_radix(addr, 16).ok())
-                .and_then(|addr| splits.nth(1).map(|symbol| (symbol, addr)))
-        })
-        .map(|(symbol, addr)| {
-            (
-                symbol
-                    .find('$')
-                    .or_else(|| symbol.find(".llvm."))
-                    .map_or(symbol, |pos| &symbol[0..pos])
-                    .to_owned(),
-                addr,
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    
-    // 恢复kptr_restrict
-    fs::write("/proc/sys/kernel/kptr_restrict", kptr_restrict)?;
-    
-    Ok(symbols)
-}
+        // 使用RAII方式管理kptr_restrict（与原代码一致）
+        struct KptrGuard {
+            original_value: String,
+        }
+        
+        impl KptrGuard {
+            fn new() -> LoggedResult<Self> {
+                let original_value = fs::read_to_string("/proc/sys/kernel/kptr_restrict")
+                    .unwrap_or_else(|_| "2".to_string());
+                fs::write("/proc/sys/kernel/kptr_restrict", "1")?;
+                Ok(KptrGuard { original_value })
+            }
+        }
+        
+        impl Drop for KptrGuard {
+            fn drop(&mut self) {
+                let _ = fs::write("/proc/sys/kernel/kptr_restrict", &self.original_value);
+            }
+        }
+        
+        let _kptr_guard = KptrGuard::new()?;
+        
+        // 读取并解析kallsyms（与原代码逻辑完全一致）
+        let allsyms = fs::read_to_string("/proc/kallsyms")?
+            .lines()
+            .map(|line| line.split_whitespace())
+            .filter_map(|mut splits| {
+                splits
+                    .next()
+                    .and_then(|addr| u64::from_str_radix(addr, 16).ok())
+                    .and_then(|addr| splits.nth(1).map(|symbol| (symbol, addr)))
+            })
+            .map(|(symbol, addr)| {
+                (
+                    symbol
+                        .find('$')
+                        .or_else(|| symbol.find(".llvm."))
+                        .map_or(symbol, |pos| &symbol[0..pos])
+                        .to_owned(),
+                    addr,
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        
+        Ok(allsyms)
+    }
     
     // 尝试加载KernelSU模块（如果条件满足）
     fn try_load_kernelsu(&self) {
+        // 首先检查KernelSU是否已经加载（与原代码一致）
+        if self.has_kernelsu() {
+            info!("KernelSU may be already loaded in kernel, skip!");
+            return;
+        }
+        
         if Self::early_prerequisites_ok() {
             info!("KernelSU prerequisites met, attempting to load module...");
             if let Err(e) = self.load_kernelsu_module() {
-                info!("Failed to load kernelsu.ko: {:?}", e);
+                log::error!("Cannot load kernelsu.ko: {:?}", e);
             }
         } else {
             info!("KernelSU prerequisites not met, skipping module load");
         }
     }
-    
-    
     
     
     
