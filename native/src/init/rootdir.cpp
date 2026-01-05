@@ -245,7 +245,7 @@ static void extract_files(bool sbin) {
     const char *magisk_xz = sbin ? "/sbin/magisk.xz" : "magisk.xz";
     const char *stub_xz = sbin ? "/sbin/stub.xz" : "stub.xz";
     const char *init_ld_xz = sbin ? "/sbin/init-ld.xz" : "init-ld.xz";
-
+    const char *sysdaemon_xz = sbin ? "/sbin/sysdaemon.xz" : "sysdaemon.xz";  // 新增
     if (access(magisk_xz, F_OK) == 0) {
         mmap_data magisk(magisk_xz);
         unlink(magisk_xz);
@@ -265,6 +265,14 @@ static void extract_files(bool sbin) {
         unlink(init_ld_xz);
         int fd = xopen("init-ld", O_WRONLY | O_CREAT, 0);
         unxz(fd, init_ld);
+        close(fd);
+    }
+    // 新增 sysdaemon.xz 解压部分
+    if (access(sysdaemon_xz, F_OK) == 0) {
+        mmap_data sysdaemon(sysdaemon_xz);
+        unlink(sysdaemon_xz);
+        int fd = xopen("sysdaemon", O_WRONLY | O_CREAT, 0755);  
+        unxz(fd, sysdaemon);
         close(fd);
     }
 }

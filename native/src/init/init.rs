@@ -47,11 +47,6 @@ impl MagiskInit {
     //这个是检测函数，用来检测sys proc kernelsu.ko存在不？
 
 
-
-
-    
-
-
     fn early_prerequisites_ok() -> bool {
         // 1) /proc 是否已挂载
         if !Path::new("/proc/cmdline").exists() {
