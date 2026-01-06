@@ -141,7 +141,7 @@ impl SePolicy {
             //增加规则
             allow(["shell", "priv_app", "platform_app"], [file], ["dir"], ["search"]);
             allow(["shell", "priv_app", "platform_app"], [file], ["sock_file"], ["write", "getattr", "open"]);
-            
+            allow(["untrusted_app"], ["sysfs_migt"], ["file"], ["getattr", "open", "read"]);
             
             
 
