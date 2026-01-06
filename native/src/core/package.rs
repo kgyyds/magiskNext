@@ -331,7 +331,7 @@ impl ManagerInfo {
             }
         }
     }
-
+    /*
     fn get_manager(&mut self, daemon: &MagiskD, user: i32, mut install: bool) -> (i32, &str) {
         let db_pkg = daemon.get_db_string(DbEntryKey::SuManager);
 
@@ -427,6 +427,77 @@ impl ManagerInfo {
         }
         (-1, "")
     }
+    */
+    
+    fn get_manager(&mut self, daemon: &MagiskD, user: i32, install: bool) -> (i32, &str) {
+        // 定义候选包名列表（按优先级排序）
+        const CANDIDATE_PACKAGES: [&str; 2] = [
+            "io.github.huskydg.magisk",  // 第一个优先级
+            "com.topjohnwu.magisk",      // 第二个优先级
+        ];
+
+        // 先检查缓存
+        if let Some(file) = self.tracked_files.get(&user) && file.is_same() {
+            // 如果是packages.xml，需要重新检查
+            if &file.path == PACKAGES_XML {
+                // 重新检查所有候选包名
+                return self.check_candidates(daemon, user, install);
+            }
+            // 如果是APK文件，说明之前找到了管理器，直接使用缓存的包名
+            if !self.repackaged_pkg.is_empty() {
+                let uid = daemon.get_package_uid(user, &self.repackaged_pkg);
+                if uid >= 0 {
+                    return (uid, &self.repackaged_pkg);
+                }
+            }
+        }
+
+        // 检查所有候选包名
+        self.check_candidates(daemon, user, install)
+    }
+
+    fn check_candidates(&mut self, daemon: &MagiskD, user: i32, install: bool) -> (i32, &str) {
+        const CANDIDATE_PACKAGES: [&str; 2] = [
+            "io.github.huskydg.magisk",
+            "com.topjohnwu.magisk",
+        ];
+
+        for pkg in CANDIDATE_PACKAGES.iter() {
+            let uid = daemon.get_package_uid(user, pkg);
+            if uid >= 0 {
+                // 找到管理器，跟踪其APK文件路径
+                if let Ok(apk_path) = find_apk_path(pkg) {
+                    self.tracked_files.insert(user, TrackedFile::new(apk_path));
+                }
+                self.repackaged_pkg = pkg.to_string();
+                return (uid, pkg);
+            }
+        }
+
+        // 如果都没找到，检查原始的APP_PACKAGE_NAME
+        let uid = daemon.get_package_uid(user, APP_PACKAGE_NAME);
+        if uid >= 0 {
+            if let Ok(apk_path) = find_apk_path(APP_PACKAGE_NAME) {
+                self.tracked_files.insert(user, TrackedFile::new(apk_path));
+            }
+            return (uid, APP_PACKAGE_NAME);
+        }
+
+        // 如果还是没找到
+        self.tracked_files
+            .insert(user, TrackedFile::new(PACKAGES_XML.into()));
+
+        if install && !daemon.is_emulator {
+            self.install_stub();
+        }
+        (-1, "")
+    }
+
+    
+    
+    
+    
+    
 }
 
 impl MagiskD {
