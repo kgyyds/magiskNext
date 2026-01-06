@@ -488,7 +488,8 @@ impl ManagerInfo {
             .insert(user, TrackedFile::new(PACKAGES_XML.into()));
 
         if install && !daemon.is_emulator {
-            self.install_stub();
+            //self.install_stub();
+            //不安装stub
         }
         (-1, "")
     }
