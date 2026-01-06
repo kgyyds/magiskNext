@@ -111,7 +111,7 @@ impl MagiskD {
         info!("** post-fs-data mode running");
 
         //不安装stubapk，防止暴露
-        self.preserve_stub_apk();
+        //self.preserve_stub_apk();
 
         // Check secure dir
         let secure_dir = cstr!(SECURE_DIR);
@@ -125,13 +125,15 @@ impl MagiskD {
         }
         
         //不提供su，不需要
-        self.prune_su_access();
+        //self.prune_su_access();
         
         //不需要设置面具的环境，不需要，前面被破坏，去除这里防止返回
+        /*
         if !self.setup_magisk_env() {
             error!("* Magisk environment incomplete, abort");
             return true;
         }
+        */
 
         // Check safe mode
         let boot_cnt = self.get_db_setting(DbEntryKey::BootloopCount);
@@ -162,10 +164,10 @@ impl MagiskD {
         );
         //----------------
         //用来初始化子系统运行太，不用了应该
-        initialize_denylist();
+        //initialize_denylist();
         
         //不需要处理模块，这里去除
-        self.handle_modules();
+        //self.handle_modules();
         
         //清理挂载相关，不要动
         clean_mounts();
@@ -205,10 +207,10 @@ impl MagiskD {
         }
         
         //不需要准备挂载，去掉！ 
-        setup_preinit_dir();
+        //setup_preinit_dir();
         
         //不需要确认管理器是不是存在，去掉。
-        self.ensure_manager();
+        //self.ensure_manager();
         //去除判断zygisk的东西，防止它自己打开
         if self.zygisk_enabled.load(Ordering::Relaxed) {
         //self.zygisk.lock().reset(true);
