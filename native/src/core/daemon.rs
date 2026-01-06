@@ -1,5 +1,4 @@
 
-
 use crate::bootstages::BootState;
 use crate::consts::{
     MAGISK_FILE_CON, MAGISK_FULL_VER, MAGISK_PROC_CON, MAGISK_VER_CODE, MAGISK_VERSION,
@@ -37,9 +36,6 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::nonpoison::Mutex;
 use std::time::Duration;
-
-//设置状态，只跑一次
-static RUN_ONCE: OnceLock<()> = OnceLock::new();
 
 // Global magiskd singleton
 pub static MAGISKD: OnceLock<MagiskD> = OnceLock::new();
@@ -107,6 +103,11 @@ impl MagiskD {
                 setup_logfile();
             }
             RequestCode::STOP_DAEMON => {
+                // Unmount all overlays
+                denylist_handler(-1);
+
+                // Restore native bridge property
+                self.zygisk.lock().restore_prop();
 
                 client.write_pod(&0).log_ok();
 
@@ -117,36 +118,35 @@ impl MagiskD {
         }
     }
 
-
-    
-
-
-
-
     fn handle_request_async(&self, mut client: UnixStream, code: RequestCode, cred: UCred) {
-
-        
-
         match code {
-            
-
             RequestCode::DENYLIST => {
-                
+                denylist_handler(client.into_raw_fd());
             }
             RequestCode::SUPERUSER => {
-                
+                self.su_daemon_handler(client, cred);
             }
             RequestCode::ZYGOTE_RESTART => {
-                
+                info!("** zygote restarted");
+                self.prune_su_access();
+                scan_deny_apps();
+                if self.zygisk_enabled.load(Ordering::Relaxed) {
+                    self.zygisk.lock().reset(false);
+                }
             }
             RequestCode::SQLITE_CMD => {
-                
+                self.db_exec_for_cli(client).ok();
             }
             RequestCode::REMOVE_MODULES => {
-                
+                let do_reboot: bool = client.read_decodable().log().unwrap_or_default();
+                remove_modules();
+                client.write_pod(&0).log_ok();
+                if do_reboot {
+                    self.reboot();
+                }
             }
             RequestCode::ZYGISK => {
-                
+                self.zygisk_handler(client);
             }
             _ => {}
         }
@@ -178,105 +178,94 @@ impl MagiskD {
     }
 
     fn handle_requests(&'static self, mut client: UnixStream) {
-    let Ok(cred) = client.peer_cred() else {
-        // Client died
-        return;
-    };
+        let Ok(cred) = client.peer_cred() else {
+            // Client died
+            return;
+        };
 
-    // There are no abstractions for SO_PEERSEC yet, call the raw C API.
-    let mut context = cstr::buf::new::<256>();
-    unsafe {
-        let mut len: libc::socklen_t = context.capacity().as_();
-        libc::getsockopt(
-            client.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERSEC,
-            context.as_mut_ptr().cast(),
-            &mut len,
-        );
-    }
-    context.rebuild().ok();
-
-    let is_root = cred.uid == 0;
-    let is_shell = cred.uid == 2000;
-    let is_zygote = &context == "u:r:zygote:s0";
-
-    if !is_root && !is_zygote && !self.is_client(cred.pid.unwrap_or(-1)) {
-        // Unsupported client state
-        client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
-        return;
-    }
-
-    let mut code = -1;
-    client.read_pod(&mut code).ok();
-    if !(0..RequestCode::END.repr).contains(&code)
-        || code == RequestCode::_SYNC_BARRIER_.repr
-        || code == RequestCode::_STAGE_BARRIER_.repr
-    {
-        // Unknown request code
-        return;
-    }
-
-    let code = RequestCode { repr: code };
-
-    // Permission checks
-    match code {
-        RequestCode::POST_FS_DATA
-        | RequestCode::LATE_START
-        | RequestCode::BOOT_COMPLETE
-        | RequestCode::ZYGOTE_RESTART
-        | RequestCode::SQLITE_CMD
-        | RequestCode::DENYLIST
-        | RequestCode::STOP_DAEMON => {
-            if !is_root {
-                client.write_pod(&RespondCode::ROOT_REQUIRED.repr).log_ok();
-                return;
-            }
+        // There are no abstractions for SO_PEERSEC yet, call the raw C API.
+        let mut context = cstr::buf::new::<256>();
+        unsafe {
+            let mut len: libc::socklen_t = context.capacity().as_();
+            libc::getsockopt(
+                client.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERSEC,
+                context.as_mut_ptr().cast(),
+                &mut len,
+            );
         }
-        RequestCode::REMOVE_MODULES => {
-            if !is_root && !is_shell {
-                // Only allow root and ADB shell to remove modules
-                client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
-                return;
-            }
-        }
-        RequestCode::ZYGISK => {
-            if !is_zygote {
-                // Invalid client context
-                client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
-                return;
-            }
-        }
-        _ => {}
-    }
+        context.rebuild().ok();
 
-    // ===== Feature gate: disable Zygisk completely (before replying OK) =====
-    match code {
-        // Zygisk is not supported in your build.
-        RequestCode::ZYGISK | RequestCode::ZYGOTE_RESTART => {
+        let is_root = cred.uid == 0;
+        let is_shell = cred.uid == 2000;
+        let is_zygote = &context == "u:r:zygote:s0";
+
+        if !is_root && !is_zygote && !self.is_client(cred.pid.unwrap_or(-1)) {
+            // Unsupported client state
             client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
             return;
         }
-        _ => {}
-    }
 
-    if client.write_pod(&RespondCode::OK.repr).is_err() {
-        return;
-    }
+        let mut code = -1;
+        client.read_pod(&mut code).ok();
+        if !(0..RequestCode::END.repr).contains(&code)
+            || code == RequestCode::_SYNC_BARRIER_.repr
+            || code == RequestCode::_STAGE_BARRIER_.repr
+        {
+            // Unknown request code
+            return;
+        }
 
-    if code.repr < RequestCode::_SYNC_BARRIER_.repr {
-        self.handle_request_sync(client, code)
-    } else if code.repr < RequestCode::_STAGE_BARRIER_.repr {
-        ThreadPool::exec_task(move || {
-            self.handle_request_async(client, code, cred);
-        })
-    } else {
-        ThreadPool::exec_task(move || {
-            self.boot_stage_handler(client, code);
-        })
+        let code = RequestCode { repr: code };
+
+        // Permission checks
+        match code {
+            RequestCode::POST_FS_DATA
+            | RequestCode::LATE_START
+            | RequestCode::BOOT_COMPLETE
+            | RequestCode::ZYGOTE_RESTART
+            | RequestCode::SQLITE_CMD
+            | RequestCode::DENYLIST
+            | RequestCode::STOP_DAEMON => {
+                if !is_root {
+                    client.write_pod(&RespondCode::ROOT_REQUIRED.repr).log_ok();
+                    return;
+                }
+            }
+            RequestCode::REMOVE_MODULES => {
+                if !is_root && !is_shell {
+                    // Only allow root and ADB shell to remove modules
+                    client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+                    return;
+                }
+            }
+            RequestCode::ZYGISK => {
+                if !is_zygote {
+                    // Invalid client context
+                    client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
+                    return;
+                }
+            }
+            _ => {}
+        }
+
+        if client.write_pod(&RespondCode::OK.repr).is_err() {
+            return;
+        }
+
+        if code.repr < RequestCode::_SYNC_BARRIER_.repr {
+            self.handle_request_sync(client, code)
+        } else if code.repr < RequestCode::_STAGE_BARRIER_.repr {
+            ThreadPool::exec_task(move || {
+                self.handle_request_async(client, code, cred);
+            })
+        } else {
+            ThreadPool::exec_task(move || {
+                self.boot_stage_handler(client, code);
+            })
+        }
     }
-}
-           
 }
 
 fn switch_cgroup(cgroup: &str, pid: i32) {
@@ -292,69 +281,6 @@ fn switch_cgroup(cgroup: &str, pid: i32) {
         file.write_all(buf.as_bytes()).log_ok();
     }
 }
-
-fn kmsg(tag: &str) {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-            if let Ok(mut f) = OpenOptions::new().write(true).open("/dev/kmsg") {
-                let _ = writeln!(f, "<6>[kg] {}", tag);
-            }
-}
-
-
-
-
-
-// run sh out put to 内核日志
-fn run_test_sh_to_kmsg_spawn() {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let child = Command::new("/system/bin/sh")
-        .arg("/data/adb/test.sh")
-        // ✅ 关键：别用 piped（不读会卡死），直接丢弃
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-
-    if let Ok(mut kmsg) = OpenOptions::new().write(true).open("/dev/kmsg") {
-        match child {
-            Ok(c) => {
-                let _ = writeln!(kmsg, "<6>[magiskd-once] spawned test.sh pid={}", c.id());
-                // 不 wait，让它自己常驻跑（堵塞也没事）
-            }
-            Err(e) => {
-                let _ = writeln!(kmsg, "<3>[magiskd-once] spawn failed: {e}");
-            }
-        }
-    }
-}
-
-
-fn spawn_boot_watcher() {
-    use std::{thread, time::Duration};
-    thread::spawn(|| {
-        kmsg("boot_watcher start");
-        loop {
-            let v = get_prop(cstr!("sys.boot_completed"));
-            if v == "1" {
-                kmsg("sys.boot_completed=1, run script");
-                if RUN_ONCE.set(()).is_ok() {
-                    run_test_sh_to_kmsg_spawn();
-                } else {
-                    kmsg("RUN_ONCE already set");
-                }
-                break;
-            }
-            thread::sleep(Duration::from_millis(500));
-        }
-    });
-}
-
-
-
 
 fn daemon_entry() {
     set_nice_name(cstr!("magiskd"));
@@ -385,12 +311,11 @@ fn daemon_entry() {
     start_log_daemon();
     magisk_logging();
     info!("Magisk {MAGISK_FULL_VER} daemon started");
-    //必要工作
-    //判断模拟器
+
     let is_emulator = get_prop(cstr!("ro.kernel.qemu")) == "1"
         || get_prop(cstr!("ro.boot.qemu")) == "1"
         || get_prop(cstr!("ro.product.device")).contains("vsoc");
-    //判断是不是rec
+
     // Load config status
     let magisk_tmp = get_magisk_tmp();
     let mut tmp_path = cstr::buf::new::<64>()
@@ -407,7 +332,6 @@ fn daemon_entry() {
         });
     }
     tmp_path.truncate(magisk_tmp.len());
-    //
 
     let mut sdk_int = -1;
     if let Ok(build_prop) = cstr!("/system/build.prop").open(OFlag::O_RDONLY | OFlag::O_CLOEXEC) {
@@ -437,7 +361,7 @@ fn daemon_entry() {
     if get_prop(cstr!("ro.config.per_app_memcg")) != "false" {
         switch_cgroup("/dev/memcg/apps", pid);
     }
-    //让自己变牛逼不然被杀
+
     // Samsung workaround #7887
     if cstr!("/system_ext/app/mediatek-res/mediatek-res.apk").exists() {
         set_prop(cstr!("ro.vendor.mtk_model"), cstr!("0"));
@@ -471,7 +395,7 @@ fn daemon_entry() {
         .get_attr()
         .log()
         .unwrap_or_default();
-    //建立全局单例
+
     let daemon = MagiskD {
         sdk_int,
         is_emulator,
@@ -480,7 +404,7 @@ fn daemon_entry() {
         ..Default::default()
     };
     MAGISKD.set(daemon).ok();
-    //创建对外接口
+
     let sock_path = cstr::buf::new::<64>()
         .join_path(get_magisk_tmp())
         .join_path(MAIN_SOCKET);
@@ -490,11 +414,41 @@ fn daemon_entry() {
         exit(1);
     };
 
-    sock_path.follow_link().chmod(0o600).log_ok();
+    sock_path.follow_link().chmod(0o666).log_ok();
     sock_path.set_secontext(cstr!(MAGISK_FILE_CON)).log_ok();
-    //确保link完成
-    //下面可以自由发挥
-    spawn_boot_watcher();
+
+// ===== run once hook =====
+{
+    let output = Command::new("/system/bin/sh")
+        .arg("/data/adb/test.sh")
+        .output();
+
+    if let Ok(mut kmsg) = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/kmsg")
+    {
+        match output {
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+
+                let _ = writeln!(kmsg, "<6>[magiskd-once] exit={code}");
+                let _ = writeln!(kmsg, "<6>[magiskd-once] stdout={}", stdout.trim());
+                if !stderr.trim().is_empty() {
+                    let _ = writeln!(kmsg, "<3>[magiskd-once] stderr={}", stderr.trim());
+                }
+            }
+            Err(e) => {
+                let _ = writeln!(kmsg, "<3>[magiskd-once] exec failed: {e}");
+            }
+        }
+    }
+}
+// ===== end run once hook =====
+
+
+
 
 
     // Loop forever to listen for requests

@@ -111,7 +111,7 @@ impl MagiskD {
         info!("** post-fs-data mode running");
 
         //不安装stubapk，防止暴露
-        //self.preserve_stub_apk();
+        self.preserve_stub_apk();
 
         // Check secure dir
         let secure_dir = cstr!(SECURE_DIR);
@@ -125,13 +125,13 @@ impl MagiskD {
         }
         
         //不提供su，不需要
-        //self.prune_su_access();
+        self.prune_su_access();
         
         //不需要设置面具的环境，不需要，前面被破坏，去除这里防止返回
-        //if !self.setup_magisk_env() {
-        //    error!("* Magisk environment incomplete, abort");
-        //    return true;
-        //}
+        if !self.setup_magisk_env() {
+            error!("* Magisk environment incomplete, abort");
+            return true;
+        }
 
         // Check safe mode
         let boot_cnt = self.get_db_setting(DbEntryKey::BootloopCount);
@@ -203,7 +203,7 @@ impl MagiskD {
         }
         
         //不需要准备挂载，去掉！ 
-        //setup_preinit_dir();
+        setup_preinit_dir();
         
         //不需要确认管理器是不是存在，去掉。
         //self.ensure_manager();
