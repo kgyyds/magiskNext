@@ -210,7 +210,7 @@ impl MagiskD {
         //去除判断zygisk的东西，防止它自己打开
         if self.zygisk_enabled.load(Ordering::Relaxed) {
         //self.zygisk.lock().reset(true);
-        //}
+        }
     }
 
     pub fn boot_stage_handler(&self, client: UnixStream, code: RequestCode) {
@@ -244,8 +244,8 @@ impl MagiskD {
             _ => {}
         }
     }
-}
 
+}
 fn check_data() -> bool {
     if let Ok(file) = cstr!("/proc/mounts").open(OFlag::O_RDONLY | OFlag::O_CLOEXEC) {
         let mut mnt = false;
@@ -273,5 +273,6 @@ fn check_data() -> bool {
             true
         };
     }
-    false
+    false 
 }
+
