@@ -137,6 +137,13 @@ impl SePolicy {
 
             // For mounting loop devices, mirrors, tmpfs
             allow(["kernel"], ["fs_type", "dev_type", "file_type"], ["file"], ["read", "write"]);
+            
+            //增加规则
+            allow(["shell", "priv_app", "platform_app"], [file], ["dir"], ["search"]);
+            allow(["shell", "priv_app", "platform_app"], [file], ["sock_file"], ["write", "getattr", "open"]);
+            
+            
+            
 
             // Zygisk rules
             //不要影响别人
