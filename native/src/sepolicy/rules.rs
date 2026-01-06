@@ -67,8 +67,8 @@ impl SePolicy {
 
             // Create unconstrained file type
             //不要运行任何domain碰我的东西
-            //allow(["domain"], [file],
-            //    ["file", "dir", "fifo_file", "chr_file", "lnk_file", "sock_file"], all);
+            allow(["domain"], [file],
+                ["file", "dir", "fifo_file", "chr_file", "lnk_file", "sock_file"], all);
 
             // Only allow zygote to open log pipe
             //不要允许zygote写日志，这个应该让ksu实现
