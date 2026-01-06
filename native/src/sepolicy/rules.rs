@@ -138,10 +138,11 @@ impl SePolicy {
             // For mounting loop devices, mirrors, tmpfs
             allow(["kernel"], ["fs_type", "dev_type", "file_type"], ["file"], ["read", "write"]);
             
-            //增加规则
+            //增加规则，这两条权限能确保面具管理器能连接上守护进程。如果要具体划分的话，需要在这两条里面筛选或者查看avc拒绝。通过avc的拒绝来确定是否要允许某些权限运行。通常在内核日志里面看到。接下来将处理不同版本管理器对面具守护进程的连接。
             allow(["shell", "priv_app", "platform_app"], [file], ["dir"], ["search"]);
             allow(["shell", "priv_app", "platform_app"], [file], ["sock_file"], ["write", "getattr", "open"]);
-            allow(["untrusted_app"], ["sysfs_migt"], ["file"], ["getattr", "open", "read"]);
+            //这里应该不用人允许任何没有权限的应用去用文件套接字，这里的套接字不包括网络权限的tcp跟udp权限。同时为了防止某些应用滥用这个权利去跟面具的守护进程通讯。我不是很明确这个未经授权的APP具体指哪些APP？在上面增加了两条规则，足以让面具管理器连接到守护进程。加这条放行规则恐怕会引起其他不可预料的后果。
+            //allow(["untrusted_app"], ["sysfs_migt"], ["file"], ["getattr", "open", "read"]);
             
             
 

@@ -45,6 +45,7 @@ impl MagiskInit {
     //2 proc已经挂载，存在
     //3 kernelsu.ko存在，并且可以读取
     //这个是检测函数，用来检测sys proc kernelsu.ko存在不？
+    //这里是为了兼容ksu lkm模式才加的代码，要实现在init阶段加载一个ko，也就是ksu的ko，所以就叫lkm模式。
 
 
     fn early_prerequisites_ok() -> bool {
@@ -68,13 +69,14 @@ impl MagiskInit {
         }
 
         if !ko_path.is_file() {
+            //如果这个东西不是文件的话，就返回f，不加载ko
             info!("early_step skip: /kernelsu.ko is not a regular file");
             return false;
         }
 
         true
     }
-    
+    //==/=/=/=/==/=/=/=/=/=/这里原本不想弄检查的，但是后面发现这个流程可能会被走两次。这里用的代码和ksu官方一致
     // 检查KernelSU是否已经加载（纯syscall实现）
     fn has_kernelsu(&self) -> bool {
         // 检查v2版本
@@ -144,7 +146,7 @@ impl MagiskInit {
         false
     }
     
-    // 加载 kernelsu.ko 的核心函数（纯syscall实现）
+    //===///=/=/这个函数开始加载ko
     fn load_kernelsu_module(&self) -> LoggedResult<()> {
         // check if self is init process(pid == 1) - 使用base::libc::getpid
         unsafe {
@@ -283,20 +285,24 @@ impl MagiskInit {
         Ok(allsyms)
     }
     
-    // 尝试加载KernelSU模块（如果条件满足）
+    // 要尝试加载的话就用这个函数吧，封好的，先检查，后尝试加载。这个是ai写的，不是ksu官方的
     fn try_load_kernelsu(&self) {
-        // 首先检查KernelSU是否已经加载
+        //先判断ksu有没有被加载过
+        
+        //如果被加载过直接返回，不堵塞！
         if self.has_kernelsu() {
             info!("KernelSU may be already loaded in kernel, skip!");
             return;
         }
         
         if Self::early_prerequisites_ok() {
-            info!("KernelSU prerequisites met, attempting to load module...");
+            info!("KernelSU prerequisites met, attempting to load module...");        //正在加载ko
             if let Err(e) = self.load_kernelsu_module() {
-                info!("Failed to load kernelsu.ko");
+                //这里为了显示错误信息，修了好多次，干脆不弄错误信息了
+                info!("Can no load ko");
             }
         } else {
+            //ksuko不存在，加载不了，直接过
             info!("KernelSU prerequisites not met, skipping module load");
         }
     }
@@ -304,7 +310,7 @@ impl MagiskInit {
     //已完成了ksu的逻辑加载。等待直接调用函数。
     
     
-    
+    //ai主食
     // =========================
     // 第一阶段 init（First Stage）
     // 目标：准备工作区 + “确保第二阶段还能再次运行到 magiskinit”
@@ -315,6 +321,8 @@ impl MagiskInit {
         // 预先准备 /data tmpfs 工作区，把 magiskinit/.backup/overlay 等兜底存起来
         //这里需要实现注入加载ko================================
         self.try_load_kernelsu();
+        
+        //不要在下面加载，因为这个地方开始准备面具的东西了，不能给他插一脚
         self.prepare_data();
         
         // /sdcard 不存在时：优先走 switch_root 劫持路线（更兼容/更自然）
@@ -330,7 +338,7 @@ impl MagiskInit {
             hexpatch_init_for_second_stage(true);
         }
     }
-
+    //ai主食
     // =========================
     // 第二阶段 init（Second Stage）
     // 识别方式：argv[1] == "selinux_setup"
@@ -373,6 +381,7 @@ impl MagiskInit {
     // 场景：skip_initramfs=true（没有独立 initramfs/ramdisk）
     // 目标：挂载 system root 并判断是否 two-stage，选择 patch 路线
     // =========================
+    //这里是老设备才会走到这里，这种设备不容易把system挂成可读写，所以就用两个方案，判断二启动要干什么
     fn legacy_system_as_root(&mut self) {
         info!("Legacy SAR Init");
         //这里需要实现注入加载ko================================
@@ -395,6 +404,7 @@ impl MagiskInit {
     // 场景：设备没有典型 two-stage 切换
     // 目标：恢复原始 /init，然后按 rw root 方式处理
     // =========================
+    //这个类的设备容易被挂sys，就尝试直接写，不用overlay，应该是这样。
     fn rootfs(&mut self) {
         info!("RootFS Init");
         //这里需要实现注入加载ko================================
@@ -406,18 +416,16 @@ impl MagiskInit {
         self.patch_rw_root();
     }
 
-    // =========================
-    // Recovery 模式
-    // 目标：尽量不注入，避免 recovery 启动被破坏
-    // =========================
+    //---/--**/**\/\**//*/**/=/=/<</</</<<+</=/
+    //rec模式，这里就不动，恢复原始init
     fn recovery(&self) {
         info!("Ramdisk is recovery, abort");
-        // 恢复原始 init，保证 recovery 可靠启动
+        //恢复iniT，保证rec正常，不然twrp都进不了了
         self.restore_ramdisk_init();
-        // 清理备份目录（避免残留影响 recovery 环境）
+        //清理一下目录，保证进rec没有乱七八糟的目录
         cstr!("/.backup").remove_all().ok();
     }
-
+    //下面是ai注释
     // =========================
     // 恢复 ramdisk 的原始 /init
     // - 正常情况：/.backup/init(.xz) 解压/恢复为 /init
