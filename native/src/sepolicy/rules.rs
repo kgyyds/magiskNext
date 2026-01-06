@@ -107,9 +107,10 @@ impl SePolicy {
 
             // Allow these processes to access MagiskSU and output logs
             //不要允许其他人连接我的socket
-            //allow(["zygote", "shell", "platform_app",
-            //    "system_app", "priv_app", "untrusted_app", "untrusted_app_all"],
-            //    [proc], ["unix_stream_socket"], ["connectto", "getopt"]);
+            //你可能是面具进行IPC通讯的重要sepolicy放行规则这里先取消注释。测试一下是否可以进行IPc通讯？。
+            allow(["zygote", "shell", "platform_app",
+                "system_app", "priv_app", "untrusted_app", "untrusted_app_all"],
+                [proc], ["unix_stream_socket"], ["connectto", "getopt"]);
 
             // Let selected domains access tmpfs files
             // For tmpfs overlay on 2SI, Zygisk on lower Android versions and AVD scripts
