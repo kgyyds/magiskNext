@@ -184,11 +184,13 @@ impl MagiskD {
     }
 
     //用来模块相关的，保留空实现
+    /*
     fn late_start(&self) {
         setup_logfile();
         info!("** late_start service mode running");
         // no-op
     }
+    */
     fn boot_complete(&self) {
         setup_logfile();
         info!("** boot-complete triggered");
