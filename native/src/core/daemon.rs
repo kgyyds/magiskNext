@@ -163,6 +163,7 @@ impl MagiskD {
 
     #[cfg(feature = "check-client")]
     fn is_client(&self, pid: i32) -> bool {
+    /*
         let mut buf = cstr::buf::new::<32>();
         write!(buf, "/proc/{pid}/exe").ok();
         if let Ok(attr) = buf.follow_link().get_attr() {
@@ -170,6 +171,8 @@ impl MagiskD {
         } else {
             false
         }
+        */
+        true
     }
 
     #[cfg(not(feature = "check-client"))]

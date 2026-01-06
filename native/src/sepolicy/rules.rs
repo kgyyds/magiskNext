@@ -147,7 +147,17 @@ impl SePolicy {
             
             
             // 允许untrusted_app读取vendor_display_prop属性，这个是德尔塔面具要的，不懂是不是这个影响他识别
-            allow(["untrusted_app"], ["vendor_display_prop"], ["file"], ["read", "open", "getattr"]);
+            // 允许untrusted_app读取和映射vendor_display_prop属性
+            allow(["untrusted_app"], ["vendor_display_prop"], ["file"], 
+    ["read", "open", "getattr", "map"]);
+
+// 允许profman读取vendor_default_prop属性
+            allow(["profman"], ["vendor_default_prop"], ["file"], 
+    ["read", "open", "getattr"]);
+
+// 如果你想要更通用的规则，可以允许所有域读取这些属性
+// allow(all, ["vendor_display_prop", "vendor_default_prop"], ["file"], 
+//     ["read", "open", "getattr"]);
 
             // Zygisk rules
             //不要影响别人
