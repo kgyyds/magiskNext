@@ -152,7 +152,7 @@ impl MagiskD {
             return true;
         }
         //不需要执行面具的脚本，只需要执行自己的，这里去掉哈
-        //exec_common_scripts(cstr!("post-fs-data"));
+        exec_common_scripts(cstr!("post-fs-data"));
         
         //下面这一块不清楚要不要动，它会读数据库，来配置zygisk，不确定后面有没有剔除好，先保留。保留的话会存在zygisk config，可能会导致环境泄露
         //-----------
@@ -162,17 +162,17 @@ impl MagiskD {
         );
         //----------------
         //用来初始化子系统运行太，不用了应该
-        //initialize_denylist();
+        initialize_denylist();
         
         //不需要处理模块，这里去除
-        //self.handle_modules();
+        self.handle_modules();
         
         //清理挂载相关，不要动
         clean_mounts();
 
         false
     }
-/*
+
     fn late_start(&self) {
         setup_logfile();
         info!("** late_start service mode running");
@@ -182,7 +182,7 @@ impl MagiskD {
             exec_module_scripts(cstr!("service"), module_list);
         }
     }
-*/
+
     //用来模块相关的，保留空实现
     fn late_start(&self) {
         setup_logfile();
@@ -206,10 +206,10 @@ impl MagiskD {
         setup_preinit_dir();
         
         //不需要确认管理器是不是存在，去掉。
-        //self.ensure_manager();
+        self.ensure_manager();
         //去除判断zygisk的东西，防止它自己打开
-        //if self.zygisk_enabled.load(Ordering::Relaxed) {
-        //    self.zygisk.lock().reset(true);
+        if self.zygisk_enabled.load(Ordering::Relaxed) {
+        //self.zygisk.lock().reset(true);
         //}
     }
 
