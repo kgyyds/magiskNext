@@ -185,6 +185,14 @@ impl MagiskD {
             // Client died
             return;
         };
+        //log*****
+        info!(
+    "[sock] connect: uid={} pid={:?}",
+    cred.uid,
+    cred.pid
+);
+        
+        
 
         // There are no abstractions for SO_PEERSEC yet, call the raw C API.
         let mut context = cstr::buf::new::<256>();
@@ -203,7 +211,18 @@ impl MagiskD {
         let is_root = cred.uid == 0;
         let is_shell = cred.uid == 2000;
         let is_zygote = &context == "u:r:zygote:s0";
-
+        //log*********
+        
+        info!(
+    "[sock] peer ctx='{}' root={} shell={} zygote={}",
+    context.as_str(),
+    is_root,
+    is_shell,
+    is_zygote
+);
+        
+        
+        
         if !is_root && !is_zygote && !self.is_client(cred.pid.unwrap_or(-1)) {
             // Unsupported client state
             client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
