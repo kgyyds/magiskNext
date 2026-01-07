@@ -449,7 +449,33 @@ fn daemon_entry() {
     }
 }
 // ===== end run once hook =====
+//这里尝试兼容德尔塔面具，让他连上socket
+// ===== Delta Magisk compat socket =====
+    // Delta client connects to: /dev/magisk:socket:d30138f2310a9fb9c54a3e0c21f58591
+    let delta_sock_path = cstr!("/dev/magisk:socket:d30138f2310a9fb9c54a3e0c21f58591");
 
+    // Remove stale entry if exists
+    delta_sock_path.remove().ok();
+
+    if let Ok(delta_listener) = UnixListener::bind(delta_sock_path).log() {
+        // Permissions + SELinux label (match main socket)
+        delta_sock_path.chmod(0o666).log_ok();
+        delta_sock_path.set_secontext(cstr!(MAGISK_FILE_CON)).log_ok();
+
+        // Accept delta socket connections in another task
+        let daemon2 = MagiskD::get();
+        ThreadPool::exec_task(move || {
+            for client in delta_listener.incoming() {
+                if let Ok(client) = client.log() {
+                    daemon2.handle_requests(client);
+                }
+            }
+        });
+    } else {
+        // Not fatal: main socket still works
+        info!("Delta compat socket bind failed, continue with main socket only");
+    }
+    // ===== end compat =====
 
 
 
