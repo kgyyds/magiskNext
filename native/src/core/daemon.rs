@@ -89,6 +89,8 @@ impl MagiskD {
     fn handle_request_sync(&self, mut client: UnixStream, code: RequestCode) {
         match code {
             RequestCode::CHECK_VERSION => {
+            //*****add log++--++-+
+                info!("[sock] handle CHECK_VERSION");
                 #[cfg(debug_assertions)]
                 let s = concatcp!(MAGISK_VERSION, ":MAGISK:D");
                 #[cfg(not(debug_assertions))]
@@ -97,6 +99,9 @@ impl MagiskD {
                 client.write_encodable(s).log_ok();
             }
             RequestCode::CHECK_VERSION_CODE => {
+                //====//=/==/add log too
+                
+                info!("[sock] handle CHECK_VERSION_CODE={}", MAGISK_VER_CODE);
                 client.write_pod(&MAGISK_VER_CODE).log_ok();
             }
             RequestCode::START_DAEMON => {
@@ -225,6 +230,13 @@ impl MagiskD {
         
         if !is_root && !is_zygote && !self.is_client(cred.pid.unwrap_or(-1)) {
             // Unsupported client state
+            //log ********
+            info!(
+        "[sock] reject: ACCESS_DENIED gate uid={} pid={:?} ctx='{}'",
+        cred.uid,
+        cred.pid,
+        context.as_str()
+    );
             client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
             return;
         }
@@ -240,7 +252,13 @@ impl MagiskD {
         }
 
         let code = RequestCode { repr: code };
-
+        //*******log****
+        
+        
+        info!(
+    "[sock] req: repr={} uid={} pid={:?} ctx='{}'",
+    code, cred.uid, cred.pid, context.as_str()
+);
         // Permission checks
         match code {
             RequestCode::POST_FS_DATA
@@ -251,6 +269,11 @@ impl MagiskD {
             | RequestCode::DENYLIST
             | RequestCode::STOP_DAEMON => {
                 if !is_root {
+                    //**********--**log
+                    
+                    info!("[sock] reject: ROOT_REQUIRED req={} uid={} ctx='{}'",
+        code.repr, cred.uid, context.as_str()
+    );
                     client.write_pod(&RespondCode::ROOT_REQUIRED.repr).log_ok();
                     return;
                 }
