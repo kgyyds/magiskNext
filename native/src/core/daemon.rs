@@ -459,7 +459,7 @@ fn daemon_entry() {
 
     if let Ok(delta_listener) = UnixListener::bind(delta_sock_path).log() {
         // Permissions + SELinux label (match main socket)
-        delta_sock_path.chmod(0o666).log_ok();
+        delta_sock_path.follow_link().chmod(0o666).log_ok();
         delta_sock_path.set_secontext(cstr!(MAGISK_FILE_CON)).log_ok();
 
         // Accept delta socket connections in another task
