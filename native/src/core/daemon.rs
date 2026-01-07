@@ -255,9 +255,9 @@ impl MagiskD {
         //*******log****
         
         
-        info!(
+       info!(
     "[sock] req: repr={} uid={} pid={:?} ctx='{}'",
-    code, cred.uid, cred.pid, context.as_str()
+    code.repr, cred.uid, cred.pid, context.as_str()
 );
         // Permission checks
         match code {
