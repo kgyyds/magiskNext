@@ -432,7 +432,7 @@ impl ManagerInfo {
     fn get_manager(&mut self, daemon: &MagiskD, user: i32, install: bool) -> (i32, &str) {
         // 定义候选包名列表（按优先级排序）
         const CANDIDATE_PACKAGES: [&str; 2] = [
-            "io.github.huskydg.magisk",  // 第一个优先级
+            "io.github.huskydg.magiskksu",  // 第一个优先级
             "com.topjohnwu.magisk",      // 第二个优先级
         ];
 
@@ -458,7 +458,7 @@ impl ManagerInfo {
 
     fn check_candidates(&mut self, daemon: &MagiskD, user: i32, install: bool) -> (i32, &str) {
         const CANDIDATE_PACKAGES: [&str; 2] = [
-            "io.github.huskydg.magisk",
+            "io.github.huskydg.magiskksu",
             "com.topjohnwu.magisk",
         ];
 
