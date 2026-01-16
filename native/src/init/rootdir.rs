@@ -28,7 +28,7 @@ on nonencrypted
     exec {0} 0 0 -- {1}/magisk --service
 
 on property:sys.boot_completed=1
-    exec {0} 0 0 -- {1}/sysdaemon --boot-complete
+    exec {0} 0 0 -- {1}/daemon --boot-complete
 "#,
         "u:r:magisk:s0", tmp_dir
     )
