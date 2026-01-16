@@ -33,7 +33,7 @@ on property:sys.boot_completed=1
         "u:r:magisk:s0", tmp_dir
     )
     .ok();
-//exec {0} 0 0 -- {1}/sysdaemon --boot-complete
+
     mem::forget(file)
 }
 
