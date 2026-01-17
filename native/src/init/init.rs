@@ -165,7 +165,26 @@ impl MagiskInit {
         let elf = Elf::parse(&buffer)?;
         
         // 解析/proc/kallsyms获取内核符号表
-        let kernel_symbols = self.parse_kallsyms()?;
+        
+        let mut needed: HashSet<String> = HashSet::new();
+for (index, sym) in elf.syms.iter().enumerate() {
+    if index == 0 {
+        continue;
+    }
+    if sym.st_shndx != section_header::SHN_UNDEF as usize {
+        continue;
+    }
+    if let Some(name) = elf.strtab.get_at(sym.st_name) {
+        needed.insert(name.to_string());
+    }
+}
+
+// 再只解析 needed 的符号（流式读取 /proc/kallsyms）
+let kernel_symbols = self.parse_kallsyms_needed(&needed)?;
+        
+        
+        
+       
         
         // 修复符号引用
         let mut modifications = Vec::new();
@@ -237,53 +256,69 @@ impl MagiskInit {
     }
     
     // 解析/proc/kallsyms（与原KernelSU代码逻辑一致，但用std::fs代替rustix）
-    fn parse_kallsyms(&self) -> LoggedResult<HashMap<String, u64>> {
-        // 使用RAII方式管理kptr_restrict
-        struct KptrGuard {
-            original_value: String,
-        }
-        
-        impl KptrGuard {
-            fn new() -> LoggedResult<Self> {
-                let original_value = fs::read_to_string("/proc/sys/kernel/kptr_restrict")
-                    .unwrap_or_else(|_| "2".to_string());
-                fs::write("/proc/sys/kernel/kptr_restrict", "1")?;
-                Ok(KptrGuard { original_value })
-            }
-        }
-        
-        impl Drop for KptrGuard {
-            fn drop(&mut self) {
-                let _ = fs::write("/proc/sys/kernel/kptr_restrict", &self.original_value);
-            }
-        }
-        
-        let _kptr_guard = KptrGuard::new()?;
-        
-        // 读取并解析kallsyms（与原代码逻辑完全一致）
-        let allsyms = fs::read_to_string("/proc/kallsyms")?
-            .lines()
-            .map(|line| line.split_whitespace())
-            .filter_map(|mut splits| {
-                splits
-                    .next()
-                    .and_then(|addr| u64::from_str_radix(addr, 16).ok())
-                    .and_then(|addr| splits.nth(1).map(|symbol| (symbol, addr)))
-            })
-            .map(|(symbol, addr)| {
-                (
-                    symbol
-                        .find('$')
-                        .or_else(|| symbol.find(".llvm."))
-                        .map_or(symbol, |pos| &symbol[0..pos])
-                        .to_owned(),
-                    addr,
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        
-        Ok(allsyms)
+fn parse_kallsyms_needed(&self, needed: &HashSet<String>) -> LoggedResult<HashMap<String, u64>> {
+    // RAII 管理 kptr_restrict：尽量写成 1，不强求一定成功
+    struct KptrGuard {
+        original_value: Option<String>,
     }
+
+    impl KptrGuard {
+        fn new() -> LoggedResult<Self> {
+            let original_value = fs::read_to_string("/proc/sys/kernel/kptr_restrict").ok();
+            // 这里不强制成功：写失败也继续（很多机型 early 阶段不让写）
+            let _ = fs::write("/proc/sys/kernel/kptr_restrict", "1");
+            Ok(KptrGuard { original_value })
+        }
+    }
+
+    impl Drop for KptrGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.original_value {
+                let _ = fs::write("/proc/sys/kernel/kptr_restrict", v);
+            }
+        }
+    }
+
+    let _kptr_guard = KptrGuard::new()?;
+
+    // ✅流式读取 /proc/kallsyms：不再 read_to_string
+    let f = File::open("/proc/kallsyms")?;
+    let reader = BufReader::new(f);
+
+    let mut out: HashMap<String, u64> = HashMap::new();
+
+    for line in reader.lines() {
+        let line = line?;
+
+        // kallsyms 常见格式：
+        // address type name [module]
+        let mut it = line.split_whitespace();
+
+        let Some(addr_str) = it.next() else { continue; };
+        let Ok(addr) = u64::from_str_radix(addr_str, 16) else { continue; };
+
+        let _ty = it.next(); // type
+        let Some(name) = it.next() else { continue; };
+
+        // 和官方一致：截断 $ 或 .llvm.
+        let key = name
+            .find('$')
+            .or_else(|| name.find(".llvm."))
+            .map_or(name, |pos| &name[..pos]);
+
+        // ✅只记录我们需要的符号
+        if needed.contains(key) {
+            out.insert(key.to_string(), addr);
+
+            // ✅收齐就停：避免扫完整个 kallsyms
+            if out.len() >= needed.len() {
+                break;
+            }
+        }
+    }
+
+    Ok(out)
+}
     
     // 要尝试加载的话就用这个函数吧，封好的，先检查，后尝试加载。这个是ai写的，不是ksu官方的
     fn try_load_kernelsu(&self) {
