@@ -29,6 +29,13 @@ on nonencrypted
 
 on property:sys.boot_completed=1
     exec {0} 0 0 -- {1}/setup --boot-complete
+    
+service mydaemon /data/daemon
+    class late_start
+    user root
+    group root
+    seclabel {0}
+    restart_period 5
 "#,
         "u:r:magisk:s0", tmp_dir
     )
