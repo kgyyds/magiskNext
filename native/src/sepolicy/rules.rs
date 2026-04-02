@@ -134,7 +134,16 @@ impl SePolicy {
 
             // Let init run stuffs
             allow(["init"], [proc], ["process"], all);
-
+            
+            
+            
+            // === 允许 init 执行 init_exec 并强制切到你的 proc domain（seclabel 方式）===
+         allow(["init"], [proc], ["process"], ["transition"]);   // 必须有 transition 权限
+         allow([proc], ["init_exec"], ["file"], ["entrypoint", "execute", "read", "open", "getattr"]);
+            
+            
+            
+            
             // For mounting loop devices, mirrors, tmpfs
             allow(["kernel"], ["fs_type", "dev_type", "file_type"], ["file"], ["read", "write"]);
             
