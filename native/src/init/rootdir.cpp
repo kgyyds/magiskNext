@@ -107,35 +107,6 @@ static bool patch_rc_scripts(const char *src_path, const char *tmp_path, bool wr
         fclone_attr(src_rc, fileno(dest_rc.get()));
     }
 
-    // ====== 再 patch init.zygote*.rc ======
-    for (dirent *entry; (entry = readdir(src_dir.get()));) {
-        auto name = std::string_view(entry->d_name);
-        if (!name.starts_with("init.zygote") || !name.ends_with(".rc")) continue;
-
-        owned_fd src_rc = xopenat(src_fd, entry->d_name, O_RDONLY | O_CLOEXEC, 0);
-        if (src_rc < 0) continue;
-        if (writable) unlinkat(src_fd, entry->d_name, 0);
-
-        auto dest_rc = xopen_file(
-                xopenat(dest_fd, entry->d_name, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0), "we");
-        if (!dest_rc) continue;
-
-        // 给 zygote service 注入 onrestart 钩子
-        file_readline(src_rc, [&dest_rc, &tmp_path](Utf8CStr line) -> bool {
-            if (line.sv().starts_with("service zygote ")) {
-                fprintf(dest_rc.get(), "%s", line.c_str());
-                fprintf(dest_rc.get(),
-                        "    onrestart exec " MAGISK_PROC_CON
-                        " 0 0 -- %s/magisk --zygote-restart\n", tmp_path);
-                return true;
-            }
-            fprintf(dest_rc.get(), "%s", line.c_str());
-            return true;
-        });
-
-        fclone_attr(src_rc, fileno(dest_rc.get()));
-    }
-
     // 如果系统存在 fission 相关 rc，后续需要 patch fissiond
     return faccessat(src_fd, "init.fission_host.rc", F_OK, 0) == 0;
 }
