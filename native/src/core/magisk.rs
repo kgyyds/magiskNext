@@ -4,7 +4,7 @@ use nix::fcntl::OFlag;
 use std::ffi::c_char;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::fd::FromRawFd;
+use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::thread::sleep;
@@ -35,7 +35,7 @@ pub fn magisk_main(_argc: i32, _argv: *mut *mut c_char) -> i32 {
     // 1. 设置 /debug_ramdisk SELinux 上下文
     match restore_tmpcon() {
         Ok(_) => write_log(&mut log_file, "restore_tmpcon: success"),
-        Err(e) => write_log(&mut log_file, &format!("restore_tmpcon: failed - {:?}", e)),
+        Err(_) => write_log(&mut log_file, "restore_tmpcon: failed"),
     }
     
     // 2. 设置 /data/daemon 为 system_file
