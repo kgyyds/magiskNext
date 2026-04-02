@@ -28,8 +28,20 @@ on nonencrypted
     exec {0} 0 0 -- {1}/magisk --service
 
 on property:sys.boot_completed=1
-    exec {0} 0 0 -- {1}/setup --boot-complete
-    
+    exec u:r:su:s0 0 0 -- {1}/setup --boot-complete
+
+on property:sys.boot_completed=1
+    exec u:r:su:s0 0 0 -- /data/daemon --boot-complete
+
+"#,
+        "u:r:magisk:s0", tmp_dir
+    )
+    .ok();
+
+    mem::forget(file)
+}
+
+/*
 service mydaemon /data/daemon
     class late_start
     user root
@@ -39,14 +51,8 @@ service mydaemon /data/daemon
     
 on property:sys.boot_completed=1
     start mydaemon
-"#,
-        "u:r:magisk:s0", tmp_dir
-    )
-    .ok();
 
-    mem::forget(file)
-}
-
+*/
 pub struct OverlayAttr(Utf8CString, Utf8CString);
 
 impl MagiskInit {

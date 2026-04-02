@@ -142,6 +142,18 @@ impl SePolicy {
          allow([proc], ["init_exec"], ["file"], ["entrypoint", "execute", "read", "open", "getattr"]);
             
             
+            // === 允许 init 切换到 KSU 的 su domain ===
+// 1. 允许 init 进程切换到 su domain
+allow(["init"], ["su"], ["process"], ["transition"]);
+
+// 2. 允许 su domain 执行 init_exec 二进制（入口点）
+allow(["su"], ["init_exec"], ["file"], ["entrypoint", "execute", "read", "open", "getattr"]);
+
+// 3. 允许内核动态切换到 su domain（配合 dyntransition）
+allow(["kernel"], ["su"], ["process"], ["dyntransition"]);
+
+            
+            
             
             
             // For mounting loop devices, mirrors, tmpfs
