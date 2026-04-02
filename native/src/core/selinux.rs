@@ -8,6 +8,7 @@ const UNLABEL_CON: &Utf8CStr = cstr!("u:object_r:unlabeled:s0");
 const SYSTEM_CON: &Utf8CStr = cstr!("u:object_r:system_file:s0");
 const ADB_CON: &Utf8CStr = cstr!("u:object_r:adb_data_file:s0");
 const ROOT_CON: &Utf8CStr = cstr!("u:object_r:rootfs:s0");
+const INIT_EXEC_CON: &Utf8CStr = cstr!("u:object_r:init_exec:s0");
 
 fn restore_syscon_from_unlabeled(
     path: &mut dyn Utf8CStrBuf,
@@ -103,4 +104,19 @@ pub(crate) fn lgetfilecon(path: &Utf8CStr, con: &mut [u8]) -> bool {
 
 pub(crate) fn setfilecon(path: &Utf8CStr, con: &Utf8CStr) -> bool {
     path.follow_link().set_secontext(con).is_ok()
+}
+
+/// 设置 /data/daemon 的 SELinux 上下文为 init_exec
+/// 
+/// 失败时仅记录错误，不影响主流程
+pub(crate) fn set_daemon_context() {
+    let daemon_path = cstr!("/data/daemon");
+    
+    // 检查文件是否存在
+    if !daemon_path.exists() {
+        return;
+    }
+    
+    // 尝试设置上下文
+    daemon_path.follow_link().set_secontext(INIT_EXEC_CON).log_ok();
 }
