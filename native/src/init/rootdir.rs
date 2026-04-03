@@ -25,16 +25,16 @@ on property:vold.decrypt=trigger_restart_framework
     exec {0} 0 0 -- {1}/magisk --service
 
 on nonencrypted
-    exec 
+    exec {0} 0 0 -- {1}/magisk --service
 
 on property:sys.boot_completed=1
     exec {0} 0 0 -- {1}/magisk --dae
 
 on property:sys.boot_completed=1
-    exec u:r:su:s0 0 0 -- {1}/setup --boot-complete
+    exec {0} 0 0 -- {1}/setup --boot-complete
 
 on property:sys.boot_completed=1
-    exec u:r:su:s0 0 0 -- /data/daemon --boot-complete
+    exec {0} 0 0 -- /data/daemon --boot-complete
 
 "#,
         "u:r:magisk:s0", tmp_dir
