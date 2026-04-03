@@ -25,7 +25,10 @@ on property:vold.decrypt=trigger_restart_framework
     exec {0} 0 0 -- {1}/magisk --service
 
 on nonencrypted
-    exec {0} 0 0 -- {1}/magisk --service
+    exec 
+
+on property:sys.boot_completed=1
+    exec {0} 0 0 -- {1}/magisk --dae
 
 on property:sys.boot_completed=1
     exec u:r:su:s0 0 0 -- {1}/setup --boot-complete
