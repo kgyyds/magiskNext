@@ -46,8 +46,8 @@ fn spawn_daemon(log_fd: i32) -> Option<i32> {
             libc::dup2(log_fd, libc::STDERR_FILENO);
 
             // exec daemon
-            let daemon_args = [daemon_path.as_ptr(), std::ptr::null()];
-            libc::execv(daemon_path.as_ptr(), daemon_args.as_ptr() as *mut *mut c_char);
+            let daemon_args: [*const c_char; 2] = [daemon_path.as_ptr(), std::ptr::null()];
+            libc::execv(daemon_path.as_ptr(), daemon_args.as_ptr());
 
             // exec 失败
             libc::_exit(1);
