@@ -96,14 +96,16 @@ impl SePolicy {
             allow(svcmgr, [proc], ["dir"], ["search"]);
             allow(svcmgr, [proc], ["file"], ["open", "read", "map"]);
             allow(svcmgr, [proc], ["process"], ["getattr"]);
-            //不要允许任何域都能 binder call/transfer 你的 proc domain。
-            //allow(["domain"], [proc], ["binder"], ["call", "transfer"]);
+            
+            // 允许任何域与 magisk proc domain 进行 binder 通信
+            // 这是解决 AVC denied { transfer } 的关键规则
+            allow(["domain"], [proc], ["binder"], ["call", "transfer"]);
 
             // Other common IPC
-            //不要允许其他人和我ipc交互
-            //allow(["domain"], [proc], ["process"], ["sigchld"]);
-            //allow(["domain"], [proc], ["fd"], ["use"]);
-            //allow(["domain"], [proc], ["fifo_file"], ["write", "read", "open", "getattr"]);
+            // 允许其他域与 magisk 进程进行基本 IPC 交互
+            allow(["domain"], [proc], ["process"], ["sigchld"]);
+            allow(["domain"], [proc], ["fd"], ["use"]);
+            allow(["domain"], [proc], ["fifo_file"], ["write", "read", "open", "getattr"]);
 
             // Allow these processes to access MagiskSU and output logs
             //不要允许其他人连接我的socket
