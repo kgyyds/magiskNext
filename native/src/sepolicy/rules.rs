@@ -134,27 +134,21 @@ impl SePolicy {
             allow(["kernel"], ["kernel"], ["process"], ["setcurrent"]);
             allow(["kernel"], [proc], ["process"], ["dyntransition"]);
 
-            // Let init run stuffs
+// Let init run stuffs
             allow(["init"], [proc], ["process"], all);
-            
-            
-            
-            // === 允许 init 执行 init_exec 并强制切到你的 proc domain（seclabel 方式）===
-         allow(["init"], [proc], ["process"], ["transition"]);   // 必须有 transition 权限
-         allow([proc], ["init_exec"], ["file"], ["entrypoint", "execute", "read", "open", "getattr"]);
-            
-            
-            // === 允许 init 切换到 KSU 的 su domain ===
-// 1. 允许 init 进程切换到 su domain
-allow(["init"], ["su"], ["process"], ["transition"]);
 
-// 2. 允许 su domain 执行 init_exec 二进制（入口点）
-allow(["su"], ["init_exec"], ["file"], ["entrypoint", "execute", "read", "open", "getattr"]);
+            // === 关键修复：seclabel 强制切 domain 到 magisk（解决 nosuid + bounded transition）===
+            // nosuid mount（/data 分区常见）下的 transition 必须显式允许 process2
+            allow(["init"], [proc], ["process2"], ["nosuid_transition"]);
 
-// 3. 允许内核动态切换到 su domain（配合 dyntransition）
-allow(["kernel"], ["su"], ["process"], ["dyntransition"]);
+            // 普通 transition + 继承权限（seclabel 常用）
+            allow(["init"], [proc], ["process"], ["transition", "siginh", "rlimitinh", "noatsecure", "bounded_transition"]);
+            allow(["init"], [proc], ["process"], ["dyntransition"]);
+            // 你的 proc domain 对 init_exec 的 entrypoint（必须）
+            allow([proc], ["init_exec"], ["file"], ["entrypoint", "execute", "read", "open", "getattr", "map"]);
 
-            
+            // init 对 init_exec 文件的 execute 权限（保险）
+            allow(["init"], ["init_exec"], ["file"], ["execute", "read", "open", "getattr", "map"]);
             
             
             
