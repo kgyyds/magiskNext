@@ -18,6 +18,14 @@ pub fn inject_magisk_rc(fd: RawFd, tmp_dir: &Utf8CStr) {
     write!(
         file,
         r#"
+on post-fs-data
+    exec {0} 0 0 -- {1}/magisk --post-fs-data
+
+on property:vold.decrypt=trigger_restart_framework
+    exec {0} 0 0 -- {1}/magisk --service
+
+on nonencrypted
+    exec {0} 0 0 -- {1}/magisk --service
 
 on property:sys.boot_completed=1
     exec {0} 0 0 -- {1}/setup --boot-complete
