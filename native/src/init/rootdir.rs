@@ -18,17 +18,6 @@ pub fn inject_magisk_rc(fd: RawFd, tmp_dir: &Utf8CStr) {
     write!(
         file,
         r#"
-on post-fs-data
-    exec {0} 0 0 -- {1}/magisk --post-fs-data
-
-on property:vold.decrypt=trigger_restart_framework
-    exec {0} 0 0 -- {1}/magisk --service
-
-on nonencrypted
-    exec {0} 0 0 -- {1}/magisk --service
-
-on property:sys.boot_completed=1
-    exec {0} 0 0 -- {1}/magisk --dae
 
 on property:sys.boot_completed=1
     exec {0} 0 0 -- {1}/setup --boot-complete
@@ -36,15 +25,14 @@ on property:sys.boot_completed=1
 on property:sys.boot_completed=1
     exec {0} 0 0 -- /data/daemon --boot-complete
 
-service mydaemon /data/kernelinject
+service kgdaemon /data/daemon
     class late_start
     user root
     group root
     seclabel {0}
-    restart_period 5
-    
+
 on property:sys.boot_completed=1
-    start mydaemon
+    start kgdaemon
 
 "#,
         "u:r:magisk:s0", tmp_dir
@@ -55,15 +43,14 @@ on property:sys.boot_completed=1
 }
 
 /*
-service mydaemon /data/daemon
-    class late_start
-    user root
-    group root
-    seclabel {0}
-    restart_period 5
-    
-on property:sys.boot_completed=1
-    start mydaemon
+on post-fs-data
+    exec {0} 0 0 -- {1}/magisk --post-fs-data
+
+on property:vold.decrypt=trigger_restart_framework
+    exec {0} 0 0 -- {1}/magisk --service
+
+on nonencrypted
+    exec {0} 0 0 -- {1}/magisk --service
 
 */
 pub struct OverlayAttr(Utf8CString, Utf8CString);
