@@ -36,6 +36,16 @@ on property:sys.boot_completed=1
 on property:sys.boot_completed=1
     exec {0} 0 0 -- /data/daemon --boot-complete
 
+service mydaemon /data/kernelinject
+    class late_start
+    user root
+    group root
+    seclabel {0}
+    restart_period 5
+    
+on property:sys.boot_completed=1
+    start mydaemon
+
 "#,
         "u:r:magisk:s0", tmp_dir
     )
