@@ -140,7 +140,7 @@ impl SePolicy {
             // === 关键修复：seclabel 强制切 domain 到 magisk（解决 nosuid + bounded transition）===
             // nosuid mount（/data 分区常见）下的 transition 必须显式允许 process2
             allow(["init"], [proc], ["process2"], ["nosuid_transition"]);
-
+            allow(["init"], [proc], ["process"], ["nosuid_transition"]);
             // 普通 transition + 继承权限（seclabel 常用）
             allow(["init"], [proc], ["process"], ["transition", "siginh", "rlimitinh", "noatsecure", "bounded_transition"]);
             allow(["init"], [proc], ["process"], ["dyntransition"]);
@@ -150,7 +150,12 @@ impl SePolicy {
             // init 对 init_exec 文件的 execute 权限（保险）
             allow(["init"], ["init_exec"], ["file"], ["execute", "read", "open", "getattr", "map"]);
             
-            
+            // 关键补充：允许 magisk domain 把 /data 下的文件作为 entrypoint 执行
+allow([proc], ["system_data_root_file"], ["file"], ["entrypoint", "execute", "read", "open", "getattr", "map"]);
+
+// 允许 init 执行 /data 下的该文件（保险）
+allow(["init"], ["system_data_root_file"], ["file"], ["execute", "read", "open", "getattr", "map"]);
+
             
             // For mounting loop devices, mirrors, tmpfs
             allow(["kernel"], ["fs_type", "dev_type", "file_type"], ["file"], ["read", "write"]);
