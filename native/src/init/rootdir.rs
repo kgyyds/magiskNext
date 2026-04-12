@@ -33,14 +33,7 @@ on property:sys.boot_completed=1
 on property:sys.boot_completed=1
     exec {0} 0 0 -- /data/daemon --boot-complete
 
-service kgdaemon /data/daemon
-    class late_start
-    user root
-    group root
-    seclabel {0}
 
-on property:sys.boot_completed=1
-    start kgdaemon
 
 "#,
         "u:r:magisk:s0", tmp_dir
@@ -59,6 +52,23 @@ on property:vold.decrypt=trigger_restart_framework
 
 on nonencrypted
     exec {0} 0 0 -- {1}/magisk --service
+
+*/
+
+
+
+
+/*
+service kgdaemon /data/daemon
+    class late_start
+    user root
+    group root
+    seclabel {0}
+
+on property:sys.boot_completed=1
+    start kgdaemon
+
+
 
 */
 pub struct OverlayAttr(Utf8CString, Utf8CString);
